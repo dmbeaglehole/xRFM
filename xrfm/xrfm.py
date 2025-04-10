@@ -1,26 +1,26 @@
 import torch
 import numpy as np
-from tabrfm import TabRFM, matrix_power
+from rfm_src import RFM, matrix_power
 from torchmetrics.functional.classification import accuracy
 from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
 import copy
 
-class RP_RFM:
+class xRFM:
     """
-    Random Projection-based Recursive Feature Machine.
+    Tree-based Recursive Feature Machine (RFM).
     
     This model recursively splits the training data using random projections 
-    and fits a TabRFM model on each subset once the subset size is small enough.
+    and fits the base RFM model on each subset once the subset size is small enough.
     
     Parameters
     ----------
     min_subset_size : int, default=30000
         The minimum size of a subset to further split. If a subset has fewer 
-        samples than this, a TabRFM model is fit on it directly.
+        samples than this, a base RFM model is fit on it directly.
     
     rfm_params : dict, default=None
-        Parameters to pass to the TabRFM model at each leaf node.
+        Parameters to pass to the RFM model at each leaf node.
         If None, default parameters are used.
     
     random_state : int, default=None
@@ -63,8 +63,6 @@ class RP_RFM:
         self.split_method = split_method
         self.maximizing_metric = tuning_metric in ['accuracy', 'auc']
         self.categorical_info = categorical_info
-
-        print(f"Maximizing metric: {self.maximizing_metric}")
 
         # parameters for refilling the validation set at leaves
         self.min_val_size = 1500
@@ -285,7 +283,7 @@ class RP_RFM:
         if (n_samples <= self.min_subset_size) or (self.max_depth is not None and depth >= self.max_depth):
             X, y, X_val, y_val = self._refill_val_set(X, y, X_val, y_val)
             # Create and fit a TabRFM model on this subset
-            model = TabRFM(**self.rfm_params, tuning_metric=self.tuning_metric, categorical_info=self.categorical_info)
+            model = RFM(**self.rfm_params, tuning_metric=self.tuning_metric, categorical_info=self.categorical_info)
             model.fit((X, y), (X_val, y_val))
             return {'type': 'leaf', 'model': model}
         
@@ -443,7 +441,7 @@ class RP_RFM:
     
     def fit(self, X, y, X_val, y_val):
         """
-        Fit the RP_RFM model to the training data.
+        Fit the xRFM model to the training data.
         
         Parameters
         ----------
@@ -586,7 +584,7 @@ class RP_RFM:
         
     def predict(self, X):
         """
-        Predict using the RP_RFM model by averaging predictions across all trees.
+        Predict using the xRFM model by averaging predictions across all trees.
         
         Parameters
         ----------
@@ -751,7 +749,7 @@ class RP_RFM:
         """
         Get the AGOP on subset for a given dataset.
         """
-        model = TabRFM(**self.default_rfm_params['model'])
+        model = RFM(**self.default_rfm_params['model'])
 
         subset_size = min(subset_size, len(X))
         subset_train_size = int(subset_size * 0.95) # 95/5 split, probably won't need the val data.

@@ -9,14 +9,14 @@ from sklearn.metrics import roc_auc_score
 import time
 from typing import Union
 
-class TabRFM(torch.nn.Module):
+class RFM(torch.nn.Module):
     """
-    Main object for TabRFMs with sklearn style interface. Subclasses must implement the kernel and update_M methods. 
+    Main object for RFMs with sklearn style interface. Subclasses must implement the kernel and update_M methods. 
     The subclasses may be either specific kernels (Laplace, Gaussian, GeneralizedLaplace, etc.), in which case the kernel method is automatically derived,
     or generic kernels (GenericKernel), in which case a Kernel object must be provided. I.e. one can either define:
     ```python
-        from rfm import TabRFM
-        model = TabRFM(kernel=LaplaceKernel(bandwidth=1, exponent=1.2), device='cpu', reg=1e-3, iters=3, bandwidth_mode='constant')
+        from rfm import RFM
+        model = RFM(kernel=LaplaceKernel(bandwidth=1, exponent=1.2), device='cpu', reg=1e-3, iters=3, bandwidth_mode='constant')
     ```
     """
 
