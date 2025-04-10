@@ -6,6 +6,8 @@ from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
 import copy
 
+import tree_utils
+
 class xRFM:
     """
     Tree-based Recursive Feature Machine (RFM).
@@ -273,7 +275,7 @@ class xRFM:
         
         return left_mask, right_mask
 
-    def _build_tree(self, X, y, X_val, y_val, depth=0, avg_M=None, is_final_iter=False):
+    def _build_tree(self, X, y, X_val, y_val, depth=0, avg_M=None, is_root=False):
         """
         Recursively build the tree by splitting data based on random projections.
         
@@ -306,7 +308,7 @@ class xRFM:
             # Create and fit a TabRFM model on this subset
             model = RFM(**self.rfm_params, tuning_metric=self.tuning_metric, categorical_info=self.categorical_info)
             model.fit((X, y), (X_val, y_val))
-            return {'type': 'leaf', 'model': model}
+            return {'type': 'leaf', 'model': model, 'is_root': is_root}
         
         # Generate projection vector
         if avg_M is not None and self.split_method == 'random_global_agop':
@@ -361,16 +363,17 @@ class xRFM:
         
         # Build subtrees
         left_tree = self._build_tree(X_left, y_left, X_val_left, y_val_left, 
-                                     depth + 1, avg_M, is_final_iter)
+                                     depth + 1, avg_M, is_root=False)
         right_tree = self._build_tree(X_right, y_right, X_val_right, y_val_right, 
-                                      depth + 1, avg_M, is_final_iter)
+                                      depth + 1, avg_M, is_root=False)
         
         return {
             'type': 'split',
-            'projection': projection,
-            'median': train_median,
+            'split_direction': projection,
+            'split_point': train_median,
             'left': left_tree,
-            'right': right_tree
+            'right': right_tree,
+            'is_root': is_root
         }
     
     def _refill_val_set(self, X, y, X_val, y_val):
@@ -421,7 +424,7 @@ class xRFM:
         avg_M = None
 
         # First iteration: use random projections
-        tree = self._build_tree(X, y, X_val, y_val, avg_M=None, is_final_iter=False)
+        tree = self._build_tree(X, y, X_val, y_val, avg_M=None, is_root=True)
         
         # Evaluate the first tree on validation data
         best_val_score = self.score_tree(X_val, y_val, tree)
@@ -429,8 +432,7 @@ class xRFM:
 
         val_scores = [best_val_score+0]
         
-        for iter_idx in tqdm(range(self.n_tree_iters), desc="Iterating tree"):
-            is_final_iter = (iter_idx == self.n_tree_iters-1)
+        for _ in tqdm(range(self.n_tree_iters), desc="Iterating tree"):
             
             # Later iterations: use averaged M from previous iterations
             avg_M = self._average_M_across_leaves(tree)
@@ -438,7 +440,7 @@ class xRFM:
             del tree
 
             # Build new tree with improved projections
-            tree = self._build_tree(X, y, X_val, y_val, avg_M=avg_M, is_final_iter=is_final_iter)
+            tree = self._build_tree(X, y, X_val, y_val, avg_M=avg_M, is_root=False)
 
             # Evaluate this iteration's tree on validation data
             val_score = self.score_tree(X_val, y_val, tree)
@@ -505,7 +507,7 @@ class xRFM:
             if self.n_tree_iters > 0:
                 tree = self._build_tree_with_iterations(X, y, X_val, y_val)
             else:
-                tree = self._build_tree(X, y, X_val, y_val)
+                tree = self._build_tree(X, y, X_val, y_val, is_root=True)
             self.trees.append(tree)
 
             if tree['type'] == 'leaf':
@@ -680,7 +682,7 @@ class xRFM:
             Predictions for all samples
         """
 
-        X_leaf_groups, X_leaf_group_indices, leaf_models = self._get_leaf_groups_and_models(X, tree)
+        X_leaf_groups, X_leaf_group_indices, leaf_models = self._get_leaf_groups_and_models_on_samples(X, tree)
 
         predictions = []
         for X_leaf, leaf_rfm in zip(X_leaf_groups, leaf_models):
@@ -709,8 +711,84 @@ class xRFM:
         order = torch.cat(X_leaf_group_indices, dim=0)
         return reorder_tensor(torch.cat(predictions, dim=0), order)
     
+    def load_state_dict(self, state_dict, X_train):
+        self.rfm_params = state_dict['rfm_params']
+        self.categorical_info = state_dict['categorical_info']
 
-    def _get_leaf_groups_and_models(self, X, tree):
+        self._build_leaf_models_from_param_trees(state_dict['param_trees'])
+
+        # set centers for leaf models
+        for tree in self.trees:
+            assert tree['is_root']
+            X_leaf_groups, _, leaf_models = self._get_leaf_groups_and_models_on_samples(X_train, tree)
+            for X_leaf, leaf_model in zip(X_leaf_groups, leaf_models):
+                leaf_model.centers = X_leaf
+        return
+    
+    def _build_leaf_models_from_param_trees(self, param_trees):
+        """
+        Build the leaf models by modifying the param trees in place. 
+        This is done by traversing the tree to the leaves, then setting the leaf_model attributes.
+        """
+        self.trees = []
+
+        def set_leaf_model_single_tree(tree):
+            if tree['type'] == 'leaf':
+                leaf_model = tree['leaf_model']
+                leaf_model.kernel_obj.bandwidth = tree['bandwidth']
+                leaf_model.weights = tree['weights']
+                leaf_model.M = tree['M']
+                leaf_model.sqrtM = tree['sqrtM']
+                return tree
+            else:
+                tree['left'] = set_leaf_model_single_tree(tree['left'])
+                tree['right'] = set_leaf_model_single_tree(tree['right'])
+                return tree
+    
+        for param_tree in param_trees:
+            self.trees.append(set_leaf_model_single_tree(param_tree))
+
+        return
+    
+    def get_state_dict(self):
+        """
+        Get the state dict of the model. State dict contains the parameters of the model in a tree format.
+        This can be used to save the model and load it later. The parameters are stored in a tree format
+        as each leaf model will have a different set of weights, M/sqrtM matrices, and bandwidths in the case
+        of adaptive bandwidths.
+        """
+        param_trees = []
+        for tree in self.trees:
+            param_trees.append(tree_utils.get_param_tree(tree, is_root=True))
+        return {
+            'rfm_params': self.rfm_params,
+            'categorical_info': self.categorical_info,
+            'param_trees': param_trees,
+        }
+    
+
+    def _get_agop_on_subset(self, X, y, subset_size=50_000):
+        """
+        Get the AGOP on subset for a given dataset.
+        """
+        model = RFM(**self.default_rfm_params['model'])
+
+        subset_size = min(subset_size, len(X))
+        subset_train_size = int(subset_size * 0.95) # 95/5 split, probably won't need the val data.
+
+        subset_indices = torch.randperm(len(X))
+        subset_train_indices = subset_indices[:subset_train_size]
+        subset_val_indices = subset_indices[subset_train_size:subset_size]
+
+        X_train = X[subset_train_indices]
+        y_train = y[subset_train_indices]
+        X_val = X[subset_val_indices]
+        y_val = y[subset_val_indices]
+
+        model.fit((X_train, y_train), (X_val, y_val), **self.default_rfm_params['fit'])
+        return model.M
+    
+    def _get_leaf_groups_and_models_on_samples(self, X, tree):
         """
         Get leaf groups and models for a given tree.
         
@@ -737,10 +815,10 @@ class xRFM:
                 return [(X, indices, node)]
             
             # Compute projections for all samples in X
-            projections = X @ node['projection']
+            projections = X @ node['split_direction']
             
             # Split samples based on projection values
-            left_mask = projections <= node['median']
+            left_mask = projections <= node['split_point']
             right_mask = ~left_mask
             
             # Recursive calls for left and right children
@@ -765,26 +843,4 @@ class xRFM:
         leaf_models = [data[2].get('model', None) for data in leaf_node_data]
         
         return X_leaf_groups, X_leaf_group_indices, leaf_models
-    
-    def _get_agop_on_subset(self, X, y, subset_size=50_000):
-        """
-        Get the AGOP on subset for a given dataset.
-        """
-        model = RFM(**self.default_rfm_params['model'])
-
-        subset_size = min(subset_size, len(X))
-        subset_train_size = int(subset_size * 0.95) # 95/5 split, probably won't need the val data.
-
-        subset_indices = torch.randperm(len(X))
-        subset_train_indices = subset_indices[:subset_train_size]
-        subset_val_indices = subset_indices[subset_train_size:subset_size]
-
-        X_train = X[subset_train_indices]
-        y_train = y[subset_train_indices]
-        X_val = X[subset_val_indices]
-        y_val = y[subset_val_indices]
-
-        model.fit((X_train, y_train), (X_val, y_val), **self.default_rfm_params['fit'])
-        return model.M
-    
     
