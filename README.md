@@ -1,4 +1,4 @@
-# TabRFM - Recursive Feature Machines optimized for tabular data
+# xRFM - Recursive Feature Machines optimized for tabular data
 
 # Installation
 
