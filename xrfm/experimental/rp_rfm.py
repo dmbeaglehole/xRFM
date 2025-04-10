@@ -1,0 +1,771 @@
+import torch
+import numpy as np
+from tabrfm import TabRFM, matrix_power
+from torchmetrics.functional.classification import accuracy
+from sklearn.metrics import roc_auc_score
+from tqdm import tqdm
+import copy
+
+class RP_RFM:
+    """
+    Random Projection-based Recursive Feature Machine.
+    
+    This model recursively splits the training data using random projections 
+    and fits a TabRFM model on each subset once the subset size is small enough.
+    
+    Parameters
+    ----------
+    min_subset_size : int, default=30000
+        The minimum size of a subset to further split. If a subset has fewer 
+        samples than this, a TabRFM model is fit on it directly.
+    
+    rfm_params : dict, default=None
+        Parameters to pass to the TabRFM model at each leaf node.
+        If None, default parameters are used.
+    
+    random_state : int, default=None
+        Controls the random state for generating random projections.
+    
+    max_depth : int, default=None
+        Maximum depth of the recursive splitting tree. If None, splitting continues
+        until all subsets are smaller than min_subset_size.
+    
+    device : str, default=None
+        Device to use for computation. If None, uses cuda if available, otherwise cpu.
+        
+    n_trees : int, default=1
+        Number of trees to build. Predictions will be averaged across all trees.
+        
+    n_tree_iters : int, default=1
+        Number of iterations to build each tree. Later iterations use the average
+        of model.M from all leaf nodes to generate better projection directions.
+        If n_tree_iters=1, the original random projection method is used.
+    
+    Notes
+    -----
+    The model follows sklearn's estimator interface with fit, predict, and score methods.
+    """
+    
+    def __init__(self, rfm_params, min_subset_size=500, random_state=None, 
+                 max_depth=None, device=None, n_trees=1, n_tree_iters=1, 
+                 split_method='random_global_agop', tuning_metric='mse', categorical_info=None):
+        self.min_subset_size = min_subset_size
+        self.rfm_params = rfm_params
+        self.random_state = random_state
+        self.max_depth = max_depth
+        self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.trees = None
+        self.projections = None
+        self.models = None
+        self.n_trees = n_trees
+        self.n_tree_iters = n_tree_iters
+        self.tuning_metric = tuning_metric
+        self.split_method = split_method
+        self.maximizing_metric = tuning_metric in ['accuracy', 'auc']
+        self.categorical_info = categorical_info
+
+        print(f"Maximizing metric: {self.maximizing_metric}")
+
+        # parameters for refilling the validation set at leaves
+        self.min_val_size = 1500
+        self.val_size_frac = 0.2
+
+        # Set random seed if provided
+        if random_state is not None:
+            torch.manual_seed(random_state)
+            np.random.seed(random_state)
+
+        self.default_rfm_params = {
+            'model': {
+                "kernel": 'l2',
+                "exponent": 1.0,
+                "bandwidth": 10.0,
+                "diag": False,
+                "reg": 1e-3,
+                "iters": 0,
+                "early_stop_rfm": False,
+                "verbose": False
+            },
+            'fit' : {
+                "return_best_params": False,
+                "fit_last_M": True,
+            }
+        }
+    
+    def tree_copy(self, tree):
+        """
+        Deep copy a tree structure.
+        
+        Parameters
+        ----------
+        tree : dict
+            Tree to copy
+            
+        Returns
+        ------- 
+        dict
+            Copied tree structure
+        """
+        return copy.deepcopy(tree)
+    
+    
+    def _generate_random_projection(self, dim):
+        """Generate a random unit vector for projection."""
+        projection = torch.randn(dim, device=self.device)
+        return projection / torch.norm(projection)
+    
+    def _generate_projection_from_M(self, dim, M):
+        """
+        Generate a projection vector using the covariance matrix M.
+        This samples from a multivariate normal distribution with covariance M.
+        """
+        if M.dim() == 1:  # If M is diagonal
+            std_devs = torch.sqrt(M)
+            projection = torch.normal(0, std_devs).to(self.device)
+        else:  # If M is a full matrix
+            # Generate random vector from standard normal distribution
+            z = torch.randn(dim, device=self.device)
+            
+            try:
+                sqrtM = matrix_power(M, 0.5)
+
+                # Transform z to get vector with covariance M
+                projection = sqrtM @ z
+            except:
+                print(f"Matrix power failed, defaulting to random projection")
+
+                # Fallback to random projection if matrix power fails
+                projection = torch.randn(dim, device=self.device)
+        
+        # Normalize to unit vector
+        return projection / torch.norm(projection)
+    
+    def _collect_leaf_models(self, node):
+        """
+        Recursively collect all leaf models in a tree.
+        
+        Parameters
+        ----------
+        node : dict
+            Current tree node
+            
+        Returns
+        -------
+        list
+            List of all TabRFM models at leaf nodes
+        """
+        if node['type'] == 'leaf':
+            return [node['model']]
+        
+        left_models = self._collect_leaf_models(node['left'])
+        right_models = self._collect_leaf_models(node['right'])
+        
+        return left_models + right_models
+
+    
+    def _average_M_across_leaves(self, tree):
+        """
+        Average the M parameter across all leaf nodes in a tree.
+        
+        Parameters
+        ----------
+        tree : dict
+            Tree to analyze
+            
+        Returns
+        -------
+        torch.Tensor
+            Averaged M parameter
+        """
+        leaf_models = self._collect_leaf_models(tree)
+        
+
+        # Collect M matrices from all leaf models
+        M_matrices = []
+        for model in leaf_models:
+            if hasattr(model, 'M') and model.M is not None:
+                M_matrices.append(model.M)
+            else:
+                identity = torch.ones(self.data_dim, device=self.device) if model.diag else torch.eye(self.data_dim, device=self.device) 
+                M_matrices.append(identity)
+
+        if M_matrices[0].dim() == 1:  # If M is diagonal
+            avg_M = torch.stack(M_matrices).mean(dim=0)
+        else:  # If M is a full matrix
+            avg_M = torch.stack(M_matrices).mean(dim=0)
+        
+        return avg_M
+
+    def _get_balanced_split(self, projections, train_median):
+        """
+        Get balanced left and right masks by assigning median points to the smaller split.
+        
+        Parameters
+        ----------
+        projections : torch.Tensor
+            Projected values for all samples
+        train_median : float
+            Median value to split on
+            
+        Returns
+        -------
+        tuple
+            (left_mask, right_mask) balanced masks
+        """
+        # Initial split
+        left_mask = projections < train_median
+        right_mask = projections > train_median
+        median_mask = projections == train_median
+
+        # Count elements in each split
+        n_left, n_right = left_mask.sum(), right_mask.sum()
+        
+        # If one split is larger, assign median points to smaller split
+        if n_left != n_right and median_mask.any():
+            median_indices = torch.where(median_mask)[0]
+            
+            if n_left < n_right:
+                # Add median points to left split
+                n_to_add = min(median_indices.size(0), n_right - n_left)
+                left_mask[median_indices[:n_to_add]] = True
+            else:
+                # Add median points to right split
+                n_to_add = min(median_indices.size(0), n_left - n_right)
+                right_mask[median_indices[:n_to_add]] = True
+                
+            # Update median mask to only include unused median points
+            if n_to_add > 0:
+                median_mask[median_indices[:n_to_add]] = False
+        
+        # Distribute any remaining median points evenly between left and right splits
+        if median_mask.any():
+            median_indices = torch.where(median_mask)[0]
+            n_median = median_indices.size(0)
+            # Split half to left, half to right (first half to left, second half to right)
+            left_half = median_indices[:n_median//2]
+            right_half = median_indices[n_median//2:]
+            
+            # Update masks
+            left_mask[left_half] = True
+            right_mask[right_half] = True
+            
+        assert not (left_mask & right_mask).any(), "Left and right masks should not overlap"
+        assert left_mask.sum() - right_mask.sum() <= 1, "Left and right masks should have the same number of elements"
+        
+        return left_mask, right_mask
+
+    def _build_tree(self, X, y, X_val, y_val, depth=0, avg_M=None, is_final_iter=False):
+        """
+        Recursively build the tree by splitting data based on random projections.
+        
+        Parameters
+        ----------
+        X : torch.Tensor
+            Input features
+        y : torch.Tensor
+            Target values
+        X_val : torch.Tensor
+            Validation features
+        y_val : torch.Tensor
+            Validation target values
+        depth : int
+            Current depth in the tree
+        avg_M : torch.Tensor, optional
+            Averaged M matrix to use for generating projections
+        is_final_iter : bool, default=False
+            Whether this is the final iteration of tree building
+            
+        Returns
+        -------
+        dict
+            A tree node (either a leaf with a model or an internal node with split information)
+        """
+        n_samples = X.shape[0]
+        # Check terminal conditions
+        if (n_samples <= self.min_subset_size) or (self.max_depth is not None and depth >= self.max_depth):
+            X, y, X_val, y_val = self._refill_val_set(X, y, X_val, y_val)
+            # Create and fit a TabRFM model on this subset
+            model = TabRFM(**self.rfm_params, tuning_metric=self.tuning_metric, categorical_info=self.categorical_info)
+            model.fit((X, y), (X_val, y_val))
+            return {'type': 'leaf', 'model': model}
+        
+        # Generate projection vector
+        if avg_M is not None and self.split_method == 'random_global_agop':
+            projection = self._generate_projection_from_M(X.shape[1], avg_M)
+        elif self.split_method == 'random_pca':
+            Xb = X - X.mean(dim=0, keepdim=True)
+            Xcov = Xb.T @ Xb
+            projection = self._generate_projection_from_M(X.shape[1], Xcov)
+        elif self.split_method == 'linear':
+            XtX = X.T @ X
+            beta = torch.linalg.solve(XtX + 1e-6*torch.eye(X.shape[1], device=self.device), X.T @ y)
+            beta = beta.mean(dim=1) # probably not the best way to do this
+            projection = beta / torch.norm(beta)
+        elif 'agop_on_subset' in self.split_method:
+            print(f"Using {self.split_method} split method")
+            M = self._get_agop_on_subset(X, y)
+            if self.split_method == 'top_vector_agop_on_subset':
+                # _, eig_vecs = torch.linalg.eigh(M)
+                _, _, Vt = torch.linalg.svd(M, full_matrices=False) # more stable than eigh and should be identical for top vectors
+                projection = Vt[0]
+            elif self.split_method == 'random_agop_on_subset':
+                projection = self._generate_projection_from_M(X.shape[1], M)
+            elif self.split_method == 'top_pc_agop_on_subset':
+                sqrtM = matrix_power(M, 0.5)
+                XM = X @ sqrtM
+                Xb = XM - XM.mean(dim=0, keepdim=True)
+                # _, eig_vecs = torch.linalg.eigh(Xb.T @ Xb)
+                _, _, Vt = torch.linalg.svd(Xb.T @ Xb, full_matrices=False) # do computation on Xb.T @ Xb assuming n >> d
+                projection = Vt[0]
+        else:
+            projection = self._generate_random_projection(X.shape[1])
+        
+        # Project data onto the random direction
+        projections = X @ projection
+        
+        # Find median as split point
+        train_median = torch.median(projections)
+        
+        # Get balanced split for training set to avoid infinite recursion with repeated data
+        left_mask, right_mask = self._get_balanced_split(projections, train_median)
+
+        X_left, y_left = X[left_mask], y[left_mask]
+        X_right, y_right = X[right_mask], y[right_mask]
+
+        # Possibly imbalanced split for validation set
+        projections_val = X_val @ projection
+        left_mask_val = projections_val <= train_median
+        right_mask_val = ~left_mask_val
+        
+        X_val_left, y_val_left = X_val[left_mask_val], y_val[left_mask_val]
+        X_val_right, y_val_right = X_val[right_mask_val], y_val[right_mask_val]
+        
+        # Build subtrees
+        left_tree = self._build_tree(X_left, y_left, X_val_left, y_val_left, 
+                                     depth + 1, avg_M, is_final_iter)
+        right_tree = self._build_tree(X_right, y_right, X_val_right, y_val_right, 
+                                      depth + 1, avg_M, is_final_iter)
+        
+        return {
+            'type': 'split',
+            'projection': projection,
+            'median': train_median,
+            'left': left_tree,
+            'right': right_tree
+        }
+    
+    def _refill_val_set(self, X, y, X_val, y_val):
+        """
+        Refill the validation set with the training set.
+        """
+    
+        if len(X_val) <= self.min_val_size:
+            n_orig_val = len(X_val)
+            n_orig_train = len(X)
+
+            num_val_to_add = self.min_val_size - len(X_val)
+            num_val_to_add = min(num_val_to_add, int(len(X)*self.val_size_frac))
+            shuffled_indices = torch.randperm(len(X))
+            val_indices = shuffled_indices[:num_val_to_add]
+            indices_to_keep = shuffled_indices[num_val_to_add:]
+            X_val = torch.cat([X_val, X[val_indices]])
+            y_val = torch.cat([y_val, y[val_indices]])
+            X = X[indices_to_keep]
+            y = y[indices_to_keep]
+
+            assert n_orig_val + num_val_to_add == len(X_val) == len(y_val)
+            assert n_orig_train - num_val_to_add == len(X) == len(y)
+
+        return X, y, X_val, y_val
+    
+    def _build_tree_with_iterations(self, X, y, X_val, y_val):
+        """
+        Build a tree using multiple iterations, where each iteration uses
+        information from the previous iteration's leaf models.
+        
+        Parameters
+        ----------
+        X : torch.Tensor
+            Input features
+        y : torch.Tensor
+            Target values
+        X_val : torch.Tensor
+            Validation features
+        y_val : torch.Tensor
+            Validation target values
+            
+        Returns
+        -------
+        dict
+            Final tree structure with the best validation performance
+        """
+        avg_M = None
+
+        # First iteration: use random projections
+        tree = self._build_tree(X, y, X_val, y_val, avg_M=None, is_final_iter=False)
+        
+        # Evaluate the first tree on validation data
+        best_val_score = self.score_tree(X_val, y_val, tree)
+        best_tree = self.tree_copy(tree)
+
+        val_scores = [best_val_score+0]
+        
+        for iter_idx in tqdm(range(self.n_tree_iters), desc="Iterating tree"):
+            is_final_iter = (iter_idx == self.n_tree_iters-1)
+            
+            # Later iterations: use averaged M from previous iterations
+            avg_M = self._average_M_across_leaves(tree)
+
+            del tree
+
+            # Build new tree with improved projections
+            tree = self._build_tree(X, y, X_val, y_val, avg_M=avg_M, is_final_iter=is_final_iter)
+
+            # Evaluate this iteration's tree on validation data
+            val_score = self.score_tree(X_val, y_val, tree)
+            val_scores.append(val_score)
+
+            if self.maximizing_metric and val_score > best_val_score:
+                best_val_score = val_score
+                best_tree = self.tree_copy(tree)
+            elif not self.maximizing_metric and val_score < best_val_score:
+                best_val_score = val_score
+                best_tree = self.tree_copy(tree)
+            
+            
+
+        print("==========================Tree iteration results==========================")
+        print("Validation scores over tree iterations:", val_scores)
+        print("Best validation score:", best_val_score)
+        print("==========================================================================")
+        return best_tree
+        
+    
+    def fit(self, X, y, X_val, y_val):
+        """
+        Fit the RP_RFM model to the training data.
+        
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training feature matrix
+        y : array-like of shape (n_samples,) or (n_samples, n_targets)
+            Target values
+        X_val : array-like of shape (n_samples, n_features)
+            Validation feature matrix
+        y_val : array-like of shape (n_samples,) or (n_samples, n_targets)
+            Validation target values
+            
+        Returns
+        -------
+        self : object
+            Returns self.
+        """
+        print(f"Fitting RP-RFM with {self.n_trees} trees and {self.n_tree_iters} iterations per tree")
+        # Convert to torch tensors if needed
+        if not isinstance(X, torch.Tensor):
+            X = torch.tensor(X, dtype=torch.float32, device=self.device)
+        if not isinstance(y, torch.Tensor):
+            y = torch.tensor(y, dtype=torch.float32, device=self.device)
+        if not isinstance(X_val, torch.Tensor):
+            X_val = torch.tensor(X_val, dtype=torch.float32, device=self.device)
+        if not isinstance(y_val, torch.Tensor):
+            y_val = torch.tensor(y_val, dtype=torch.float32, device=self.device)
+
+        self.data_dim = X.shape[1]
+        
+        # Ensure y has the right shape
+        if len(y.shape) == 1:
+            y = y.unsqueeze(-1)
+        if len(y_val.shape) == 1:
+            y_val = y_val.unsqueeze(-1)
+            
+        # Build multiple trees
+        self.trees = []
+        for _ in tqdm(range(self.n_trees), desc="Building trees"):
+            if self.n_tree_iters > 0:
+                tree = self._build_tree_with_iterations(X, y, X_val, y_val)
+            else:
+                tree = self._build_tree(X, y, X_val, y_val)
+            self.trees.append(tree)
+
+            if tree['type'] == 'leaf':
+                print("Tree has no split, stopping training")
+                break
+        
+        return self
+    
+    
+    def score(self, samples, targets):
+        """
+        Return the score of the model on the given samples and targets on self.tuning_metric.
+        
+        Parameters
+        ----------
+        samples : array-like of shape (n_samples, n_features)
+            Test samples
+        targets : array-like of shape (n_samples,) or (n_samples, n_targets)
+            True values for samples
+            
+        Returns
+        -------
+        float
+            Score of the model on the given samples and targets
+        """
+        
+
+        if self.tuning_metric == 'accuracy':
+            preds = self.predict_proba(samples.to(self.device)).to(targets.device)
+            if preds.shape[-1]==1:
+                num_classes = len(torch.unique(targets))
+                if num_classes==2:
+                    preds = torch.where(preds > 0.5, 1, 0).reshape(targets.shape)
+                    return accuracy(preds, targets, task="binary").item()
+                else:
+                    return accuracy(preds, targets, task="multiclass", num_classes=num_classes).item()
+            else:
+                preds_ = torch.argmax(preds,dim=-1)
+                targets_ = torch.argmax(targets,dim=-1)
+                return accuracy(preds_, targets_, task="multiclass", num_classes=preds.shape[-1]).item()
+        
+        elif self.tuning_metric == 'mse':
+            preds = self.predict(samples.to(self.device)).to(targets.device)
+            return (targets - preds).pow(2).mean()
+
+        elif self.tuning_metric == 'auc':
+            preds = self.predict_proba(samples.to(self.device)).to(targets.device)
+            return roc_auc_score(targets, preds)
+        
+        else:
+            raise ValueError(f"Invalid tuning metric: {self.tuning_metric}")
+        
+    def score_tree(self, samples, targets, tree):
+        """
+        Return the coefficient of determination R^2 of the prediction.
+        
+        Parameters
+        ----------
+        samples : array-like of shape (n_samples, n_features)
+            Test samples
+        targets : array-like of shape (n_samples,) or (n_samples, n_targets)
+            True values for samples
+        tree : dict
+            Tree to use for prediction
+            
+        Returns
+        -------
+        float
+            MSE loss if regression, accuracy if classification
+        """
+        
+
+        if self.tuning_metric == 'accuracy':
+            preds = self._predict_tree(samples.to(self.device), tree, proba=True).to(targets.device)
+            if preds.shape[-1]==1:
+                num_classes = len(torch.unique(targets))
+                if num_classes==2:
+                    preds = torch.where(preds > 0.5, 1, 0).reshape(targets.shape)
+                    return accuracy(preds, targets, task="binary").item()
+                else:
+                    return accuracy(preds, targets, task="multiclass", num_classes=num_classes).item()
+            else:
+                preds_ = torch.argmax(preds,dim=-1)
+                targets_ = torch.argmax(targets,dim=-1)
+                return accuracy(preds_, targets_, task="multiclass", num_classes=preds.shape[-1]).item()
+        
+        elif self.tuning_metric == 'mse':
+            preds = self._predict_tree(samples.to(self.device), tree, proba=False).to(targets.device)
+            return (targets - preds).pow(2).mean().item()
+
+        elif self.tuning_metric == 'auc':
+            preds = self._predict_tree(samples.to(self.device), tree, proba=True).to(targets.device)
+            return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy())
+        
+        else:
+            raise ValueError(f"Invalid tuning metric: {self.tuning_metric}")
+        
+    def predict(self, X):
+        """
+        Predict using the RP_RFM model by averaging predictions across all trees.
+        
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Samples to predict
+            
+        Returns
+        -------
+        array-like
+            Returns predicted values
+        """
+        if self.trees is None:
+            raise ValueError("Model has not been fitted yet.")
+        
+        # Convert to torch tensor if needed
+        if not isinstance(X, torch.Tensor):
+            X = torch.tensor(X, dtype=torch.float32, device=self.device)
+        
+        all_predictions = []
+        
+        # Get predictions from each tree
+        for tree in self.trees:
+            tree_predictions = self._predict_tree(X, tree)
+            all_predictions.append(tree_predictions)
+        
+        # Average predictions across trees
+        return torch.mean(torch.stack(all_predictions), dim=0)
+
+    def predict_proba(self, X):
+        """
+        Predict class probabilities by averaging across all trees.
+        Only usable if the underlying TabRFM models were fitted for classification.
+        
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Samples to predict
+            
+        Returns
+        -------
+        array-like
+            Returns predicted probabilities
+        """
+        if self.trees is None:
+            raise ValueError("Model has not been fitted yet.")
+        
+        # Convert to torch tensor if needed
+        if not isinstance(X, torch.Tensor):
+            X = torch.tensor(X, dtype=torch.float32, device=self.device)
+        all_probas = []
+        for tree in self.trees:
+            tree_probas = self._predict_tree(X, tree, proba=True)
+            all_probas.append(tree_probas)
+        
+        return torch.mean(torch.stack(all_probas), dim=0)
+    
+        
+    def _predict_tree(self, X, tree, proba=False):
+        """
+        Make predictions for all samples using a single tree.
+        
+        Parameters
+        ----------
+        X : torch.Tensor
+            Input features
+        tree : dict
+            Tree to use for prediction
+            
+        Returns
+        -------
+        torch.Tensor
+            Predictions for all samples
+        """
+
+        X_leaf_groups, X_leaf_group_indices, leaf_models = self._get_leaf_groups_and_models(X, tree)
+
+        predictions = []
+        for X_leaf, leaf_rfm in zip(X_leaf_groups, leaf_models):
+            if proba:
+                preds = leaf_rfm.predict_proba(X_leaf)
+            else:
+                preds = leaf_rfm.predict(X_leaf)
+            predictions.append(preds)
+
+        def reorder_tensor(original_tensor, order_tensor):
+            """
+            Args:
+                original_tensor: The tensor to be reordered
+                order_tensor: A tensor containing the new positions for each element
+                
+            Returns:
+                The reordered tensor
+            """
+            # Sort the indices based on the order tensor
+            # This gives us the inverse permutation needed
+            _, sorted_indices = torch.sort(order_tensor)
+            
+            # Use the sorted indices to reorder the original tensor
+            return original_tensor[sorted_indices]
+
+        order = torch.cat(X_leaf_group_indices, dim=0)
+        return reorder_tensor(torch.cat(predictions, dim=0), order)
+    
+
+    def _get_leaf_groups_and_models(self, X, tree):
+        """
+        Get leaf groups and models for a given tree.
+        
+        Parameters:
+        -----------
+        X : numpy.ndarray
+            The data matrix with samples as rows.
+        tree : dict
+            The decision tree with projections and split points.
+            
+        Returns:
+        --------
+        X_leaf_groups : list of numpy.ndarray
+            List of data matrices, one for each leaf node.
+        X_leaf_group_indices : list of numpy.ndarray
+            List of arrays containing the original indices of samples in each leaf group.
+        leaf_models : list
+            List of models stored at the leaf nodes.
+        """
+        # Helper function to recursively group data points
+        def group_samples_by_node(X, indices, node):
+            if node['type'] == 'leaf':
+                # We've reached a leaf node, return the samples and their indices
+                return [(X, indices, node)]
+            
+            # Compute projections for all samples in X
+            projections = X @ node['projection']
+            
+            # Split samples based on projection values
+            left_mask = projections <= node['median']
+            right_mask = ~left_mask
+            
+            # Recursive calls for left and right children
+            left_groups = group_samples_by_node(
+                X[left_mask], indices[left_mask], node['left']
+            ) if any(left_mask) else []
+            
+            right_groups = group_samples_by_node(
+                X[right_mask], indices[right_mask], node['right']
+            ) if any(right_mask) else []
+            
+            # Combine and return all groups
+            return left_groups + right_groups
+        
+        # Start recursive grouping with all indices
+        sample_indices = torch.arange(X.shape[0], device=self.device)
+        leaf_node_data = group_samples_by_node(X, sample_indices, tree)
+        
+        # Separate the grouped data into the expected return format
+        X_leaf_groups = [data[0] for data in leaf_node_data]
+        X_leaf_group_indices = [data[1] for data in leaf_node_data]
+        leaf_models = [data[2].get('model', None) for data in leaf_node_data]
+        
+        return X_leaf_groups, X_leaf_group_indices, leaf_models
+    
+    def _get_agop_on_subset(self, X, y, subset_size=50_000):
+        """
+        Get the AGOP on subset for a given dataset.
+        """
+        model = TabRFM(**self.default_rfm_params['model'])
+
+        subset_size = min(subset_size, len(X))
+        subset_train_size = int(subset_size * 0.95) # 95/5 split, probably won't need the val data.
+
+        subset_indices = torch.randperm(len(X))
+        subset_train_indices = subset_indices[:subset_train_size]
+        subset_val_indices = subset_indices[subset_train_size:subset_size]
+
+        X_train = X[subset_train_indices]
+        y_train = y[subset_train_indices]
+        X_val = X[subset_val_indices]
+        y_val = y[subset_val_indices]
+
+        model.fit((X_train, y_train), (X_val, y_val), **self.default_rfm_params['fit'])
+        return model.M
+    
+    
