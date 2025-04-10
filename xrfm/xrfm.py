@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from rfm_src import RFM, matrix_power
+from xrfm.rfm_src import RFM, matrix_power
 from torchmetrics.functional.classification import accuracy
 from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
@@ -15,7 +15,7 @@ class xRFM:
     
     Parameters
     ----------
-    min_subset_size : int, default=30000
+    min_subset_size : int, default=60000
         The minimum size of a subset to further split. If a subset has fewer 
         samples than this, a base RFM model is fit on it directly.
     
@@ -40,15 +40,35 @@ class xRFM:
         Number of iterations to build each tree. Later iterations use the average
         of model.M from all leaf nodes to generate better projection directions.
         If n_tree_iters=1, the original random projection method is used.
+
+    split_method : str, default='top_vector_agop_on_subset'
+        Method to use for splitting the data.
+        'top_vector_agop_on_subset' : use the top eigenvector of the AGOP on the subset
+        'random_agop_on_subset' : use a random eigenvector of the AGOP on the subset
+        'top_pc_agop_on_subset' : use the top principal component of the AGOP on the subset
+        'random_pca' : use a random principal component of the data
+
+    tuning_metric : str, default='mse'
+        Metric to use for tuning the model.
+        'mse' : mean squared error
+        'accuracy' : accuracy
+        'auc' : area under the ROC curve
+        
+    categorical_info : dict, default=None
+        Information about the categorical features.
+        If None, it is assumed that there are no categorical features.
+        If not None, it should be a dictionary with the following keys:
+        'categorical_indices' : list of indices of the categorical features
+        'categorical_vectors' : list of vectors of the categorical features
     
     Notes
     -----
     The model follows sklearn's estimator interface with fit, predict, and score methods.
     """
     
-    def __init__(self, rfm_params, min_subset_size=500, random_state=None, 
-                 max_depth=None, device=None, n_trees=1, n_tree_iters=1, 
-                 split_method='random_global_agop', tuning_metric='mse', categorical_info=None):
+    def __init__(self, rfm_params, min_subset_size=60_000, random_state=None, 
+                 max_depth=None, device=None, n_trees=1, n_tree_iters=0, 
+                 split_method='top_vector_agop_on_subset', tuning_metric='mse', categorical_info=None):
         self.min_subset_size = min_subset_size
         self.rfm_params = rfm_params
         self.random_state = random_state
@@ -73,6 +93,7 @@ class xRFM:
             torch.manual_seed(random_state)
             np.random.seed(random_state)
 
+        # default parameters for the split direction model
         self.default_rfm_params = {
             'model': {
                 "kernel": 'l2',
@@ -459,7 +480,7 @@ class xRFM:
         self : object
             Returns self.
         """
-        print(f"Fitting RP-RFM with {self.n_trees} trees and {self.n_tree_iters} iterations per tree")
+        print(f"Fitting xRFM with {self.n_trees} trees and {self.n_tree_iters} iterations per tree")
         # Convert to torch tensors if needed
         if not isinstance(X, torch.Tensor):
             X = torch.tensor(X, dtype=torch.float32, device=self.device)
