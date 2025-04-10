@@ -6,7 +6,7 @@ from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
 import copy
 
-import tree_utils
+from .tree_utils import get_param_tree
 
 class xRFM:
     """
@@ -304,11 +304,14 @@ class xRFM:
         n_samples = X.shape[0]
         # Check terminal conditions
         if (n_samples <= self.min_subset_size) or (self.max_depth is not None and depth >= self.max_depth):
-            X, y, X_val, y_val = self._refill_val_set(X, y, X_val, y_val)
+            X, y, X_val, y_val, train_indices_to_keep = self._refill_val_set(X, y, X_val, y_val)
+
             # Create and fit a TabRFM model on this subset
-            model = RFM(**self.rfm_params, tuning_metric=self.tuning_metric, categorical_info=self.categorical_info)
+            model = RFM(**self.rfm_params, tuning_metric=self.tuning_metric, 
+                        categorical_info=self.categorical_info, device=self.device)
+            
             model.fit((X, y), (X_val, y_val))
-            return {'type': 'leaf', 'model': model, 'is_root': is_root}
+            return {'type': 'leaf', 'model': model, 'train_indices': train_indices_to_keep, 'is_root': is_root}
         
         # Generate projection vector
         if avg_M is not None and self.split_method == 'random_global_agop':
@@ -389,16 +392,16 @@ class xRFM:
             num_val_to_add = min(num_val_to_add, int(len(X)*self.val_size_frac))
             shuffled_indices = torch.randperm(len(X))
             val_indices = shuffled_indices[:num_val_to_add]
-            indices_to_keep = shuffled_indices[num_val_to_add:]
+            train_indices_to_keep = shuffled_indices[num_val_to_add:]
             X_val = torch.cat([X_val, X[val_indices]])
             y_val = torch.cat([y_val, y[val_indices]])
-            X = X[indices_to_keep]
-            y = y[indices_to_keep]
+            X = X[train_indices_to_keep]
+            y = y[train_indices_to_keep]
 
             assert n_orig_val + num_val_to_add == len(X_val) == len(y_val)
             assert n_orig_train - num_val_to_add == len(X) == len(y)
 
-        return X, y, X_val, y_val
+        return X, y, X_val, y_val, train_indices_to_keep
     
     def _build_tree_with_iterations(self, X, y, X_val, y_val):
         """
@@ -682,14 +685,14 @@ class xRFM:
             Predictions for all samples
         """
 
-        X_leaf_groups, X_leaf_group_indices, leaf_models = self._get_leaf_groups_and_models_on_samples(X, tree)
+        X_leaf_groups, X_leaf_group_indices, leaf_nodes = self._get_leaf_groups_and_models_on_samples(X, tree)
 
         predictions = []
-        for X_leaf, leaf_rfm in zip(X_leaf_groups, leaf_models):
+        for X_leaf, leaf_node in zip(X_leaf_groups, leaf_nodes):
             if proba:
-                preds = leaf_rfm.predict_proba(X_leaf)
+                preds = leaf_node['model'].predict_proba(X_leaf)
             else:
-                preds = leaf_rfm.predict(X_leaf)
+                preds = leaf_node['model'].predict(X_leaf)
             predictions.append(preds)
 
         def reorder_tensor(original_tensor, order_tensor):
@@ -720,9 +723,10 @@ class xRFM:
         # set centers for leaf models
         for tree in self.trees:
             assert tree['is_root']
-            X_leaf_groups, _, leaf_models = self._get_leaf_groups_and_models_on_samples(X_train, tree)
-            for X_leaf, leaf_model in zip(X_leaf_groups, leaf_models):
-                leaf_model.centers = X_leaf
+            X_leaf_groups, _, leaf_nodes = self._get_leaf_groups_and_models_on_samples(X_train, tree)
+            for X_leaf, leaf_node in zip(X_leaf_groups, leaf_nodes):
+                leaf_model = leaf_node['model']
+                leaf_model.centers = X_leaf[leaf_node['train_indices']]
         return
     
     def _build_leaf_models_from_param_trees(self, param_trees):
@@ -734,11 +738,14 @@ class xRFM:
 
         def set_leaf_model_single_tree(tree):
             if tree['type'] == 'leaf':
-                leaf_model = tree['leaf_model']
+                leaf_model = RFM(**self.rfm_params, 
+                                 categorical_info=self.categorical_info, 
+                                 device=self.device)
                 leaf_model.kernel_obj.bandwidth = tree['bandwidth']
                 leaf_model.weights = tree['weights']
                 leaf_model.M = tree['M']
                 leaf_model.sqrtM = tree['sqrtM']
+                tree['model'] = leaf_model
                 return tree
             else:
                 tree['left'] = set_leaf_model_single_tree(tree['left'])
@@ -759,7 +766,7 @@ class xRFM:
         """
         param_trees = []
         for tree in self.trees:
-            param_trees.append(tree_utils.get_param_tree(tree, is_root=True))
+            param_trees.append(get_param_tree(tree, is_root=True))
         return {
             'rfm_params': self.rfm_params,
             'categorical_info': self.categorical_info,
@@ -771,7 +778,7 @@ class xRFM:
         """
         Get the AGOP on subset for a given dataset.
         """
-        model = RFM(**self.default_rfm_params['model'])
+        model = RFM(**self.default_rfm_params['model'], device=self.device)
 
         subset_size = min(subset_size, len(X))
         subset_train_size = int(subset_size * 0.95) # 95/5 split, probably won't need the val data.
@@ -840,7 +847,7 @@ class xRFM:
         # Separate the grouped data into the expected return format
         X_leaf_groups = [data[0] for data in leaf_node_data]
         X_leaf_group_indices = [data[1] for data in leaf_node_data]
-        leaf_models = [data[2].get('model', None) for data in leaf_node_data]
+        leaf_nodes = [data[2] for data in leaf_node_data]
         
-        return X_leaf_groups, X_leaf_group_indices, leaf_models
+        return X_leaf_groups, X_leaf_group_indices, leaf_nodes
     
