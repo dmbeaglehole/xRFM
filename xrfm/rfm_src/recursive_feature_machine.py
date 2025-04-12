@@ -4,7 +4,7 @@ import torch, numpy as np
 from torchmetrics.functional.classification import accuracy
 from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplaceKernel
 from tqdm.contrib import tenumerate
-from .utils import matrix_power, SmoothClampedReLU
+from .utils import matrix_power, SmoothClampedReLU, f1_score
 from sklearn.metrics import roc_auc_score
 import time
 from typing import Union
@@ -21,13 +21,13 @@ class RFM(torch.nn.Module):
     """
 
     def __init__(self, kernel: Union[Kernel, str], agop_power=0.5, device=None, diag=False, reg=1e-3, verbose=True,
-                 iters=4, bandwidth=10., exponent=1., centering=False, bandwidth_mode='constant', mem_gb=None,
+                 iters=4, bandwidth=10., exponent=1., center_grads=False, bandwidth_mode='constant', mem_gb=None,
                  classification=False, M_batch_size=None, tuning_metric='mse', categorical_info=None, early_stop_rfm=True, 
-                 early_stop_multiplier=1.1):
+                 early_stop_multiplier=1.1, fast_categorical=True):
         """
         :param device: device to run the model on
         :param diag: if True, Mahalanobis matrix M will be diagonal
-        :param centering: if True, update_M will center the gradients before taking an outer product
+        :param center_grads: if True, update_M will center the gradients before taking an outer product
         :param bandwidth_mode: 'constant' or 'adaptive'
         :param mem_gb: memory in GB for AGOP/EigenPro
         :param numerical_indices: torch.Tensor(n_num,)
@@ -44,7 +44,7 @@ class RFM(torch.nn.Module):
         self.reg = reg
         self.iters = iters
         self.diag = diag # if True, Mahalanobis matrix M will be diagonal
-        self.centering = centering # if True, update_M will center the gradients before taking an outer product
+        self.center_grads = center_grads # if True, update_M will center the gradients before taking an outer product
         self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.agop_power = 0.5 # power for root of agop
         self.max_lstsq_size = 70_000 # max number of points to use for direct solve
@@ -60,7 +60,7 @@ class RFM(torch.nn.Module):
 
         print(f"Early stop multiplier: {self.early_stop_multiplier}")
         
-        if categorical_info is not None: 
+        if categorical_info is not None and fast_categorical: 
             if isinstance(self.kernel_obj, ProductLaplaceKernel):
                 self.set_categorical_indices(**categorical_info)
             else:
@@ -104,7 +104,7 @@ class RFM(torch.nn.Module):
                 self.sqrtM = torch.eye(samples.shape[-1], device=samples.device, dtype=samples.dtype)
 
         agop_func = self.kernel_obj.get_agop_diag if self.diag else self.kernel_obj.get_agop
-        agop = agop_func(x=self.centers, z=samples, coefs=self.weights.t(), mat=self.sqrtM, center_grads=self.centering)
+        agop = agop_func(x=self.centers, z=samples, coefs=self.weights.t(), mat=self.sqrtM, center_grads=self.center_grads)
         return agop
     
     def reset_adaptive_bandwidth(self):
@@ -144,7 +144,8 @@ class RFM(torch.nn.Module):
 
     def update_best_params(self, best_metric, best_alphas, best_M, best_sqrtM, best_iter, best_bandwidth, current_metric, current_iter):
         # if classification and accuracy higher, or if regression and mse lower
-        if self.tuning_metric in ['accuracy', 'auc'] and current_metric > best_metric:
+        maximize_metric = self.tuning_metric in ['accuracy', 'auc', 'f1']
+        if maximize_metric and current_metric > best_metric:
             best_metric = current_metric
             best_alphas = self.tensor_copy(self.weights)
             best_iter = current_iter
@@ -152,7 +153,7 @@ class RFM(torch.nn.Module):
             best_M = self.tensor_copy(self.M)
             best_sqrtM = self.tensor_copy(self.sqrtM)
 
-        elif self.tuning_metric == 'mse' and current_metric < best_metric:
+        elif not maximize_metric and current_metric < best_metric:
             best_metric = current_metric
             best_alphas = self.tensor_copy(self.weights)
             best_iter = current_iter
@@ -543,6 +544,10 @@ class RFM(torch.nn.Module):
         if 'mse' in metrics:
             preds = self.predict(samples.to(self.device)).to(targets.device)
             out_metrics['mse'] = (targets - preds).pow(2).mean()
+
+        if 'f1' in metrics:
+            preds = self.predict(samples.to(self.device)).to(targets.device)
+            out_metrics['f1'] = f1_score(preds, targets, num_classes=preds.shape[-1]).item()
 
         if 'auc' in metrics:
             preds = self.predict_proba(samples.to(self.device))

@@ -68,12 +68,12 @@ class xRFM:
     The model follows sklearn's estimator interface with fit, predict, and score methods.
     """
     
-    def __init__(self, rfm_params, min_subset_size=60_000, random_state=None, 
+    def __init__(self, rfm_params=None, min_subset_size=60_000,
                  max_depth=None, device=None, n_trees=1, n_tree_iters=0, 
-                 split_method='top_vector_agop_on_subset', tuning_metric='mse', categorical_info=None):
+                 split_method='top_vector_agop_on_subset', tuning_metric='mse', 
+                 categorical_info=None):
         self.min_subset_size = min_subset_size
         self.rfm_params = rfm_params
-        self.random_state = random_state
         self.max_depth = max_depth
         self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.trees = None
@@ -89,11 +89,6 @@ class xRFM:
         # parameters for refilling the validation set at leaves
         self.min_val_size = 1500
         self.val_size_frac = 0.2
-
-        # Set random seed if provided
-        if random_state is not None:
-            torch.manual_seed(random_state)
-            np.random.seed(random_state)
 
         # default parameters for the split direction model
         self.default_rfm_params = {
@@ -161,9 +156,9 @@ class xRFM:
         # Normalize to unit vector
         return projection / torch.norm(projection)
     
-    def _collect_leaf_models(self, node):
+    def _collect_leaf_nodes(self, node):
         """
-        Recursively collect all leaf models in a tree.
+        Recursively collect all leaf nodes in a tree.
         
         Parameters
         ----------
@@ -176,12 +171,12 @@ class xRFM:
             List of all TabRFM models at leaf nodes
         """
         if node['type'] == 'leaf':
-            return [node['model']]
+            return [node]
         
-        left_models = self._collect_leaf_models(node['left'])
-        right_models = self._collect_leaf_models(node['right'])
+        left_nodes = self._collect_leaf_nodes(node['left'])
+        right_nodes = self._collect_leaf_nodes(node['right'])
         
-        return left_models + right_models
+        return left_nodes + right_nodes
 
     
     def _average_M_across_leaves(self, tree):
@@ -198,8 +193,8 @@ class xRFM:
         torch.Tensor
             Averaged M parameter
         """
-        leaf_models = self._collect_leaf_models(tree)
-        
+        leaf_nodes = self._collect_leaf_nodes(tree)
+        leaf_models = [node['model'] for node in leaf_nodes]
 
         # Collect M matrices from all leaf models
         M_matrices = []
@@ -275,7 +270,7 @@ class xRFM:
         
         return left_mask, right_mask
 
-    def _build_tree(self, X, y, X_val, y_val, depth=0, avg_M=None, is_root=False):
+    def _build_tree(self, X, y, X_val, y_val, train_indices=None, depth=0, avg_M=None, is_root=False):
         """
         Recursively build the tree by splitting data based on random projections.
         
@@ -302,16 +297,21 @@ class xRFM:
             A tree node (either a leaf with a model or an internal node with split information)
         """
         n_samples = X.shape[0]
+        if train_indices is None:
+            train_indices = torch.arange(n_samples, device=self.device)
+
         # Check terminal conditions
         if (n_samples <= self.min_subset_size) or (self.max_depth is not None and depth >= self.max_depth):
-            X, y, X_val, y_val, train_indices_to_keep = self._refill_val_set(X, y, X_val, y_val)
+            if not is_root: # refill the validation set if you've split the data before
+                print("Refilling validation set, because at least one split has been made.")
+                X, y, X_val, y_val, train_indices = self._refill_val_set(X, y, X_val, y_val, train_indices)
 
             # Create and fit a TabRFM model on this subset
             model = RFM(**self.rfm_params, tuning_metric=self.tuning_metric, 
                         categorical_info=self.categorical_info, device=self.device)
             
             model.fit((X, y), (X_val, y_val))
-            return {'type': 'leaf', 'model': model, 'train_indices': train_indices_to_keep, 'is_root': is_root}
+            return {'type': 'leaf', 'model': model, 'train_indices': train_indices, 'is_root': is_root}
         
         # Generate projection vector
         if avg_M is not None and self.split_method == 'random_global_agop':
@@ -362,13 +362,19 @@ class xRFM:
         right_mask_val = ~left_mask_val
         
         X_val_left, y_val_left = X_val[left_mask_val], y_val[left_mask_val]
-        X_val_right, y_val_right = X_val[right_mask_val], y_val[right_mask_val]
+        X_val_right, y_val_right = X_val[right_mask_val], y_val[right_mask_val] 
         
         # Build subtrees
-        left_tree = self._build_tree(X_left, y_left, X_val_left, y_val_left, 
-                                     depth + 1, avg_M, is_root=False)
+        left_tree = self._build_tree(X_left, y_left, X_val_left, y_val_left,  
+                                     train_indices=train_indices[left_mask], 
+                                     depth=depth + 1,
+                                     avg_M=avg_M,
+                                     is_root=False)
         right_tree = self._build_tree(X_right, y_right, X_val_right, y_val_right, 
-                                      depth + 1, avg_M, is_root=False)
+                                      train_indices=train_indices[right_mask], 
+                                      depth=depth + 1, 
+                                      avg_M=avg_M,
+                                      is_root=False)
         
         return {
             'type': 'split',
@@ -379,11 +385,11 @@ class xRFM:
             'is_root': is_root
         }
     
-    def _refill_val_set(self, X, y, X_val, y_val):
+    def _refill_val_set(self, X, y, X_val, y_val, train_indices):
         """
         Refill the validation set with the training set.
         """
-    
+
         if len(X_val) <= self.min_val_size:
             n_orig_val = len(X_val)
             n_orig_train = len(X)
@@ -392,16 +398,19 @@ class xRFM:
             num_val_to_add = min(num_val_to_add, int(len(X)*self.val_size_frac))
             shuffled_indices = torch.randperm(len(X))
             val_indices = shuffled_indices[:num_val_to_add]
-            train_indices_to_keep = shuffled_indices[num_val_to_add:]
+            local_train_indices_to_keep = shuffled_indices[num_val_to_add:]
+
             X_val = torch.cat([X_val, X[val_indices]])
             y_val = torch.cat([y_val, y[val_indices]])
-            X = X[train_indices_to_keep]
-            y = y[train_indices_to_keep]
+            X = X[local_train_indices_to_keep]
+            y = y[local_train_indices_to_keep]
+
+            train_indices = train_indices[local_train_indices_to_keep]
 
             assert n_orig_val + num_val_to_add == len(X_val) == len(y_val)
             assert n_orig_train - num_val_to_add == len(X) == len(y)
 
-        return X, y, X_val, y_val, train_indices_to_keep
+        return X, y, X_val, y_val, train_indices
     
     def _build_tree_with_iterations(self, X, y, X_val, y_val):
         """
@@ -723,10 +732,11 @@ class xRFM:
         # set centers for leaf models
         for tree in self.trees:
             assert tree['is_root']
-            X_leaf_groups, _, leaf_nodes = self._get_leaf_groups_and_models_on_samples(X_train, tree)
-            for X_leaf, leaf_node in zip(X_leaf_groups, leaf_nodes):
+            leaf_nodes = self._collect_leaf_nodes(tree)
+            for leaf_node in leaf_nodes:
                 leaf_model = leaf_node['model']
-                leaf_model.centers = X_leaf[leaf_node['train_indices']]
+                leaf_center_indices = leaf_node['train_indices']
+                leaf_model.centers = X_train[leaf_center_indices]
         return
     
     def _build_leaf_models_from_param_trees(self, param_trees):

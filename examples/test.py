@@ -57,15 +57,15 @@ print(f'xRFM time: {end_time-start_time:g} s, loss: {loss.item():g}')
 state_dict = model.get_state_dict()
 
 # print(state_dict['param_trees'])
-# def get_tree_attributes(tree, attr='weights'):
-#     if tree['type'] == 'leaf':
-#         return print(tree['weights'].shape)
-#     else:
-#         get_tree_attributes(tree['left'], attr)
-#         get_tree_attributes(tree['right'], attr)
-# get_tree_attributes(state_dict['param_trees'][0])
+def get_tree_attributes(tree, attr='train_indices'):
+    if tree['type'] == 'leaf':
+        return print(tree[attr].shape)
+    else:
+        get_tree_attributes(tree['left'], attr)
+        get_tree_attributes(tree['right'], attr)
+get_tree_attributes(state_dict['param_trees'][0])
 
-new_model = xRFM(rfm_params, device=DEVICE, min_subset_size=10_000, tuning_metric='mse')
+new_model = xRFM()
 new_model.load_state_dict(state_dict, X_train)
 
 y_pred = new_model.predict(X_test)

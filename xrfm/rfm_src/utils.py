@@ -20,6 +20,33 @@ class SmoothClampedReLU(nn.Module):
         
         return clamped
 
+def f1_score(preds, targets, num_classes, min_float=1e-8):
+
+    if num_classes == 1:
+        preds = torch.where(preds >= 0.5, 1, 0)
+        targets = torch.where(targets >= 0.5, 1, 0)
+    else:
+        preds = torch.argmax(preds, dim=-1)
+        targets = torch.argmax(targets, dim=-1)
+    
+    # Calculate F1 score components
+    tp = torch.zeros(num_classes)
+    fp = torch.zeros(num_classes)
+    fn = torch.zeros(num_classes)
+    
+    for c in range(num_classes):
+        tp[c] = ((preds == c) & (targets == c)).sum().float()
+        fp[c] = ((preds == c) & (targets != c)).sum().float()
+        fn[c] = ((preds != c) & (targets == c)).sum().float()
+    
+    # Avoid division by zero
+    precision = tp / (tp + fp + min_float)
+    recall = tp / (tp + fn + min_float)
+    
+    f1 = 2 * precision * recall / (precision + recall + min_float)
+    
+    # Return mean F1 score across all classes
+    return f1.mean()
 
 def float_x(data):
     '''Set data array precision.'''
