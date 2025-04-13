@@ -5,6 +5,7 @@ from torchmetrics.functional.classification import accuracy
 from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplaceKernel
 from tqdm.contrib import tenumerate
 from .utils import matrix_power, SmoothClampedReLU, f1_score
+from .gpu_utils import with_env_var
 from sklearn.metrics import roc_auc_score
 import time
 from typing import Union
@@ -223,6 +224,7 @@ class RFM(torch.nn.Module):
                          lr_scale=lr_scale, classification=self.classification, **kwargs)
         return ep_model.weight.clone()
 
+    @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     def predict(self, samples, max_batch_size=50_000):
         samples, original_format = self.validate_samples(samples)
         out = []
@@ -326,6 +328,7 @@ class RFM(torch.nn.Module):
         self.ep_epochs = ep_epochs
         return
     
+    @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True") # to prevent OOM issue due to memory fragmentation
     def fit(self, train_data, val_data=None, iters=None, method='lstsq', reg=None,
             verbose=None, M_batch_size=None, ep_epochs=None, return_best_params=True, bs=None, 
             return_Ms=False, lr_scale=1, total_points_to_sample=None, solver='solve', fit_last_M=False, 
@@ -562,6 +565,7 @@ class RFM(torch.nn.Module):
 
         return out_metrics
     
+    @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     def predict_proba(self, samples, eps=1e-3):
         predictions = self.predict(samples)
         if predictions.shape[1] == 1:

@@ -5,7 +5,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy.linalg import sqrtm, fractional_matrix_power
 
-
 class SmoothClampedReLU(nn.Module):
     def __init__(self, beta=50):
         super(SmoothClampedReLU, self).__init__()
@@ -101,3 +100,4 @@ def stable_matrix_power(M, power):
         return M**power
     else:
         raise ValueError(f"Invalid matrix shape for square root: {M.shape}")
+
