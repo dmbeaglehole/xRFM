@@ -607,7 +607,7 @@ class xRFM:
                 return accuracy(preds_, targets_, task="multiclass", num_classes=preds.shape[-1]).item()
         
         elif self.tuning_metric == 'mse':
-            preds = self._predict_tree(samples.to(self.device), tree, proba=False).to(targets.device)
+            preds = self._predict_tree(samples.to(self.device), tree).to(targets.device)
             return (targets - preds).pow(2).mean().item()
 
         elif self.tuning_metric == 'auc':
