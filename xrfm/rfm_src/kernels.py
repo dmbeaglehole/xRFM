@@ -22,7 +22,8 @@ class Kernel:
     def __init__(self):
         self.is_adaptive_bandwidth = True
         self.handle_categorical = False
-
+        self.use_sqrtM = True
+        
     def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError()
 
@@ -136,7 +137,6 @@ class Kernel:
         """
         grads = self._get_function_grad_impl(self._transform_m(x, mat), self._transform_m(z, mat), coefs)
         return self._transform_m(grads, mat)
-
     
     def get_agop_diag(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor,
                       mat: Optional[torch.Tensor] = None, center_grads: bool = False) -> torch.Tensor:
@@ -148,7 +148,67 @@ class Kernel:
             f_grads = f_grads - f_grads.mean(dim=0, keepdim=True)
         return f_grads.square().sum(dim=-2)
 
+class LightLaplaceKernel(Kernel):
+    def __init__(self, bandwidth: float, exponent: float, eps: float = 1e-10, bandwidth_mode: str = 'constant'):
+        super().__init__()
+        assert bandwidth > 0
+        assert exponent > 0
+        assert eps > 0
+        self.bandwidth_mode = bandwidth_mode
+        self.base_bandwidth = bandwidth
+        self.bandwidth = bandwidth
+        self.exponent = exponent
+        self.eps = eps
+        self.use_sqrtM = False
 
+    def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        xm = self._transform_m(x, mat)
+        zm = self._transform_m(z, mat)
+
+        xm_norm_sqr = (xm*x).sum(dim=-1)
+        zm_norm_sqr = (zm*z).sum(dim=-1)
+
+        kernel_mat = xm_norm_sqr[:, None] - 2*xm@z.T + zm_norm_sqr[None, :]
+        kernel_mat.clamp_(min=0)
+        kernel_mat.sqrt_()
+
+        if not self.is_adaptive_bandwidth:
+            self._adapt_bandwidth(kernel_mat)
+        if self.exponent != 1.0:
+            kernel_mat.pow_(self.exponent)
+
+        kernel_mat.mul_(-1. / (self.bandwidth ** self.exponent))
+        kernel_mat.exp_()
+        return kernel_mat
+
+    def get_function_grads(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, 
+                           mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        xm = self._transform_m(x, mat)
+        zm = self._transform_m(z, mat)
+
+        xm_norm_sqr = (xm*x).sum(dim=-1)
+        zm_norm_sqr = (zm*z).sum(dim=-1)
+
+        dists = xm_norm_sqr[:, None] - 2*xm@z.T + zm_norm_sqr[None, :]
+        dists.clamp_(min=0)
+        dists.sqrt_()
+
+        gamma = 1. / self.bandwidth
+        kernel_mat = dists ** self.exponent
+        kernel_mat.mul_(-gamma)
+        kernel_mat.exp_()
+
+        # now compute M
+        mask = dists >= self.eps
+        dists.clamp_(min=self.eps)
+        dists.pow_(self.exponent - 2)
+        kernel_mat.mul_(dists)
+        kernel_mat.mul_(mask)  # this is very important for numerical stability
+        kernel_mat.mul_(-gamma * self.exponent)
+
+        # now we want result[l, j, d] = \sum_i coefs[l, i] M[i, j] (z[j, d] - x[i, d])
+        return torch.einsum('li,ij,jd->ljd', coefs, kernel_mat, zm) - torch.einsum('li,ij,id->ljd', coefs, kernel_mat, xm)
+        
 class LaplaceKernel(Kernel):
     def __init__(self, bandwidth: float, exponent: float, eps: float = 1e-10, bandwidth_mode: str = 'constant'):
         super().__init__()

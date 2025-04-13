@@ -177,7 +177,16 @@ class xRFM:
         right_nodes = self._collect_leaf_nodes(node['right'])
         
         return left_nodes + right_nodes
-
+    
+    def collect_best_agops(self):
+        """
+        Collect the best agops from all leaf nodes in a tree.
+        """
+        best_agops = []
+        for t in self.trees:
+            leaf_nodes = self._collect_leaf_nodes(t)
+            best_agops += [node['model'].agop_best_model for node in leaf_nodes]
+        return best_agops
     
     def _average_M_across_leaves(self, tree):
         """
@@ -567,7 +576,7 @@ class xRFM:
 
         elif self.tuning_metric == 'auc':
             preds = self.predict_proba(samples.to(self.device)).to(targets.device)
-            return roc_auc_score(targets, preds)
+            return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy())
         
         else:
             raise ValueError(f"Invalid tuning metric: {self.tuning_metric}")

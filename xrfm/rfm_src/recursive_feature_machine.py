@@ -2,7 +2,7 @@ from .eigenpro import KernelModel
     
 import torch, numpy as np
 from torchmetrics.functional.classification import accuracy
-from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplaceKernel
+from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplaceKernel, LightLaplaceKernel
 from tqdm.contrib import tenumerate
 from .utils import matrix_power, SmoothClampedReLU, f1_score
 from .gpu_utils import with_env_var
@@ -57,6 +57,7 @@ class RFM(torch.nn.Module):
         self.tuning_metric = tuning_metric
         self.early_stop_rfm = early_stop_rfm
         self.early_stop_multiplier = early_stop_multiplier
+        self.use_sqrtM = self.kernel_obj.use_sqrtM
 
 
         print(f"Early stop multiplier: {self.early_stop_multiplier}")
@@ -76,11 +77,13 @@ class RFM(torch.nn.Module):
             self.mem_gb = 8
         
     def kernel(self, x, z):
-        return self.kernel_obj.get_kernel_matrix(x, z, self.sqrtM)
+        return self.kernel_obj.get_kernel_matrix(x, z, self.sqrtM if self.use_sqrtM else self.M)
 
     def kernel_from_str(self, kernel_str, bandwidth, exponent):
         if kernel_str in ['laplace', 'l2']:
             return LaplaceKernel(bandwidth=bandwidth, exponent=exponent)
+        elif kernel_str in ['l2_high_dim', 'l2_light']:
+            return LightLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         elif kernel_str in ['product_laplace', 'l1']:
             return ProductLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         elif kernel_str in ['sum_power_laplace', 'l1_power']:
@@ -98,14 +101,14 @@ class RFM(torch.nn.Module):
             else:
                 self.M = torch.eye(samples.shape[-1], device=samples.device, dtype=samples.dtype)
 
-        if self.sqrtM is None:
+        if self.use_sqrtM and self.sqrtM is None:
             if self.diag:
                 self.sqrtM = torch.ones(samples.shape[-1], device=samples.device, dtype=samples.dtype)
             else:
                 self.sqrtM = torch.eye(samples.shape[-1], device=samples.device, dtype=samples.dtype)
 
         agop_func = self.kernel_obj.get_agop_diag if self.diag else self.kernel_obj.get_agop
-        agop = agop_func(x=self.centers, z=samples, coefs=self.weights.t(), mat=self.sqrtM, center_grads=self.center_grads)
+        agop = agop_func(x=self.centers, z=samples, coefs=self.weights.t(), mat=self.sqrtM if self.use_sqrtM else self.M, center_grads=self.center_grads)
         return agop
     
     def reset_adaptive_bandwidth(self):
@@ -331,7 +334,7 @@ class RFM(torch.nn.Module):
     @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True") # to prevent OOM issue due to memory fragmentation
     def fit(self, train_data, val_data=None, iters=None, method='lstsq', reg=None,
             verbose=None, M_batch_size=None, ep_epochs=None, return_best_params=True, bs=None, 
-            return_Ms=False, lr_scale=1, total_points_to_sample=None, solver='solve', fit_last_M=False, 
+            return_Ms=False, lr_scale=1, total_points_to_sample=None, solver='solve', 
             tuning_metric=None, prefit_eigenpro=True, **kwargs):
         """
         :param train_data: tuple of (X, y)
@@ -347,7 +350,6 @@ class RFM(torch.nn.Module):
         :param lr_scale: learning rate scale for EigenPro
         :param total_points_to_sample: number of points to sample for AGOP computation
         :param solver: 'solve' or 'cholesky' or 'lu', used in LSTSQ computation
-        :param fit_last_M: if True, fit the Mahalanobis matrix one last time after training
         :param prefit_eigenpro: if True, prefit EigenPro with a subset of <= max_lstsq_size samples
         """
 
@@ -400,8 +402,6 @@ class RFM(torch.nn.Module):
                 if self.verbose:
                     print(f"Round {i}, Val MSE: {val_mse:.4f}")
 
-            return_val = val_metrics[self.tuning_metric]
-
             if return_best_params:
                 best_metric, best_alphas, best_M, best_sqrtM, best_iter, best_bandwidth = self.update_best_params(best_metric, best_alphas, 
                                                                                                                 best_M, best_sqrtM, 
@@ -453,12 +453,6 @@ class RFM(torch.nn.Module):
                                                                                                                     final_val_metrics[self.tuning_metric], 
                                                                                                                     iters)
                 
-            if fit_last_M: # fit last M from final fit
-                self.fit_M(X_train, y_train, verbose=verbose, M_batch_size=M_batch_size, fit_last_M=fit_last_M, **kwargs)
-                Ms.append(self.tensor_copy(self.M))
-
-            return_val = final_val_metrics[self.tuning_metric]
-
         if return_best_params:
             self.M = None if best_M is None else best_M.to(self.device)
             self.sqrtM = None if best_sqrtM is None else best_sqrtM.to(self.device)
@@ -466,14 +460,11 @@ class RFM(torch.nn.Module):
             self.kernel_obj.bandwidth = best_bandwidth
 
         self.best_iter = best_iter
+        self.agop_best_model = self.M
+        if self.agop_best_model is None: # ensure agop_best_model is always set.
+            self.agop_best_model = self.fit_M(X_train, y_train, inplace=False, **kwargs)
 
-        if return_Ms and fit_last_M:
-            self.agop_best_model = Ms[best_iter]
-
-        if return_Ms:
-            return Ms, metrics
-        total_time = time.time() - start_rfm_time
-        return return_val, total_time
+        return Ms if return_Ms else None
     
     def _compute_optimal_M_batch(self, n, c, d, scalar_size=4, mem_constant=2., max_batch_size=10_000, max_cheap_batch_size=20_000):
         """Computes the optimal batch size for AGOP."""
@@ -489,7 +480,7 @@ class RFM(torch.nn.Module):
         print(f"Optimal M batch size: {M_batch_size}")
         return M_batch_size
     
-    def fit_M(self, samples, labels, M_batch_size=None, **kwargs):
+    def fit_M(self, samples, labels, M_batch_size=None, inplace=True, **kwargs):
         """Applies AGOP to update the Mahalanobis matrix M."""
         
         n, d = samples.shape
@@ -517,10 +508,17 @@ class RFM(torch.nn.Module):
             for bids in batches:
                 M.add_(self.update_M(samples[bids]))
         
-        self.M = M / (M.max() + 1e-30)
-        self.sqrtM = matrix_power(self.M, self.agop_power)
-        del M
-
+        scaled_M = M / (M.max() + 1e-30)
+        if self.use_sqrtM:
+            sqrtM = matrix_power(scaled_M, self.agop_power)
+        else:
+            sqrtM = None
+        
+        if inplace:
+            self.M = scaled_M
+            self.sqrtM = sqrtM
+        else:
+            return scaled_M
         
     def score(self, samples, targets, metrics):
         """
