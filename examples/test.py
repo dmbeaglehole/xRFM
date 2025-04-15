@@ -32,7 +32,7 @@ print(f'X_test.shape: {X_test.shape}, y_test.shape: {y_test.shape}')
 
 DEVICE = torch.device("cuda")
 rfm_params = {
-    "kernel": 'l2',
+    "kernel": 'l2_high_dim',
     "bandwidth": bw,
     "exponent": 1.0,
     "diag": False,
