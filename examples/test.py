@@ -32,29 +32,21 @@ print(f'X_test.shape: {X_test.shape}, y_test.shape: {y_test.shape}')
 
 DEVICE = torch.device("cuda")
 rfm_params = {
-    "kernel": 'l2_high_dim',
-    "bandwidth": bw,
-    "exponent": 1.0,
-    "diag": False,
-    "reg": reg,
-    "iters": iters,
-    "M_batch_size": len(X_train),
-    "verbose": False,
-    "early_stop_rfm": True,
-    'bandwidth_mode': 'constant'
+    'model': {
+        'kernel': "l2_high_dim",
+        'bandwidth': bw,
+        'exponent': 1.0,
+        'diag': False,
+        'bandwidth_mode': "constant"
+    },
+    'fit': {
+        'reg': reg,
+        'iters': iters,
+        'M_batch_size': len(X_train),
+        'verbose': False,
+        'early_stop_rfm': True,
+    }
 }
-model = xRFM(rfm_params, device=DEVICE, min_subset_size=2_500, tuning_metric='mse')
-
-start_time = time.time()
-model.fit(X_train, y_train, X_test, y_test)
-end_time = time.time()
-
-y_pred = model.predict(X_test)
-loss = mse_loss(y_pred, y_test)
-print(f'xRFM time: {end_time-start_time:g} s, loss: {loss.item():g}')
-
-
-rfm_params['kernel'] = 'l2_high_dim'
 model = xRFM(rfm_params, device=DEVICE, min_subset_size=2_500, tuning_metric='mse')
 
 start_time = time.time()

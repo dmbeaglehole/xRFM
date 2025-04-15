@@ -353,7 +353,6 @@ class RFM(torch.nn.Module):
         :param prefit_eigenpro: if True, prefit EigenPro with a subset of <= max_lstsq_size samples
         """
 
-        start_rfm_time = time.time()
         self.verbose = verbose if verbose is not None else self.verbose
         self.fit_using_eigenpro = (method.lower()=='eigenpro')
         self.prefit_eigenpro = prefit_eigenpro

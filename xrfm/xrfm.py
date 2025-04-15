@@ -93,20 +93,23 @@ class xRFM:
         # default parameters for the split direction model
         self.default_rfm_params = {
             'model': {
-                "kernel": 'l2',
+                "kernel": 'l2_high_dim',
                 "exponent": 1.0,
                 "bandwidth": 10.0,
                 "diag": False,
-                "reg": 1e-3,
-                "iters": 0,
-                "early_stop_rfm": False,
-                "verbose": False
+                "bandwidth_mode": "constant"
             },
             'fit' : {
                 "return_best_params": False,
                 "fit_last_M": True,
+                "reg": 1e-3,
+                "iters": 0,
+                "early_stop_rfm": False,
+                "verbose": False
             }
         }
+        if self.rfm_params is None:
+            self.rfm_params = self.default_rfm_params
     
     def tree_copy(self, tree):
         """
@@ -316,10 +319,10 @@ class xRFM:
                 X, y, X_val, y_val, train_indices = self._refill_val_set(X, y, X_val, y_val, train_indices)
 
             # Create and fit a TabRFM model on this subset
-            model = RFM(**self.rfm_params, tuning_metric=self.tuning_metric, 
+            model = RFM(**self.rfm_params['model'], tuning_metric=self.tuning_metric, 
                         categorical_info=self.categorical_info, device=self.device)
             
-            model.fit((X, y), (X_val, y_val))
+            model.fit((X, y), (X_val, y_val), **self.rfm_params['fit'])
             return {'type': 'leaf', 'model': model, 'train_indices': train_indices, 'is_root': is_root}
         
         # Generate projection vector
@@ -757,7 +760,7 @@ class xRFM:
 
         def set_leaf_model_single_tree(tree):
             if tree['type'] == 'leaf':
-                leaf_model = RFM(**self.rfm_params, 
+                leaf_model = RFM(**self.rfm_params['model'], 
                                  categorical_info=self.categorical_info, 
                                  device=self.device)
                 leaf_model.kernel_obj.bandwidth = tree['bandwidth']
