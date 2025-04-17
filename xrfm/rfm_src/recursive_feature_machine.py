@@ -21,14 +21,12 @@ class RFM(torch.nn.Module):
     ```
     """
 
-    def __init__(self, kernel: Union[Kernel, str], agop_power=0.5, device=None, diag=False, reg=1e-3, verbose=True,
-                 iters=4, bandwidth=10., exponent=1., center_grads=False, bandwidth_mode='constant', mem_gb=None,
-                 classification=False, M_batch_size=None, tuning_metric='mse', categorical_info=None, early_stop_rfm=True, 
-                 early_stop_multiplier=1.1, fast_categorical=True):
+    def __init__(self, kernel: Union[Kernel, str], iters=5, bandwidth=10., exponent=1., bandwidth_mode='constant', 
+                 agop_power=0.5, device=None, diag=False, verbose=True, mem_gb=None, tuning_metric='mse', 
+                 categorical_info=None, fast_categorical=True):
         """
         :param device: device to run the model on
         :param diag: if True, Mahalanobis matrix M will be diagonal
-        :param center_grads: if True, update_M will center the gradients before taking an outer product
         :param bandwidth_mode: 'constant' or 'adaptive'
         :param mem_gb: memory in GB for AGOP/EigenPro
         :param numerical_indices: torch.Tensor(n_num,)
@@ -42,25 +40,17 @@ class RFM(torch.nn.Module):
         self.agop_power = agop_power
         self.M = None
         self.sqrtM = None
-        self.reg = reg
         self.iters = iters
         self.diag = diag # if True, Mahalanobis matrix M will be diagonal
-        self.center_grads = center_grads # if True, update_M will center the gradients before taking an outer product
         self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.agop_power = 0.5 # power for root of agop
         self.max_lstsq_size = 70_000 # max number of points to use for direct solve
         self.bandwidth_mode = bandwidth_mode
         self.proba_beta = 500
-        self.M_batch_size = M_batch_size
         self.verbose = verbose
-        self.classification = classification
         self.tuning_metric = tuning_metric
-        self.early_stop_rfm = early_stop_rfm
-        self.early_stop_multiplier = early_stop_multiplier
         self.use_sqrtM = self.kernel_obj.use_sqrtM
 
-
-        print(f"Early stop multiplier: {self.early_stop_multiplier}")
         
         if categorical_info is not None and fast_categorical: 
             if isinstance(self.kernel_obj, ProductLaplaceKernel):
@@ -332,10 +322,10 @@ class RFM(torch.nn.Module):
         return
     
     @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True") # to prevent OOM issue due to memory fragmentation
-    def fit(self, train_data, val_data=None, iters=None, method='lstsq', reg=None,
+    def fit(self, train_data, val_data=None, iters=None, method='lstsq', reg=None, center_grads=False,
             verbose=None, M_batch_size=None, ep_epochs=None, return_best_params=True, bs=None, 
             return_Ms=False, lr_scale=1, total_points_to_sample=None, solver='solve', 
-            tuning_metric=None, prefit_eigenpro=True, **kwargs):
+            tuning_metric=None, prefit_eigenpro=True, early_stop_rfm=True, early_stop_multiplier=1.1, **kwargs):
         """
         :param train_data: tuple of (X, y)
         :param val_data: tuple of (X, y)
@@ -363,6 +353,9 @@ class RFM(torch.nn.Module):
         self.ep_epochs = ep_epochs
         self.tuning_metric = tuning_metric if tuning_metric is not None else self.tuning_metric
         self.minimize = self.tuning_metric in ['mse']
+        self.early_stop_rfm = early_stop_rfm
+        self.early_stop_multiplier = early_stop_multiplier
+        self.center_grads = center_grads
 
         X_train, y_train, X_val, y_val = self.validate_data(train_data, val_data)
 
@@ -465,11 +458,12 @@ class RFM(torch.nn.Module):
 
         return Ms if return_Ms else None
     
-    def _compute_optimal_M_batch(self, n, c, d, scalar_size=4, mem_constant=2., max_batch_size=10_000, max_cheap_batch_size=20_000):
+    def _compute_optimal_M_batch(self, n, c, d, scalar_size=4, mem_constant=2., max_batch_size=10_000, 
+                            max_cheap_batch_size=20_000, light_kernels=[LaplaceKernel, LightLaplaceKernel]):
         """Computes the optimal batch size for AGOP."""
-        if self.device in ['cpu', torch.device('cpu')] or isinstance(self.kernel_obj, LaplaceKernel):
-            # cpu and LaplaceKernel are less memory intensive, use a single batch
-            M_batch_size = min(n, max_cheap_batch_size)
+        if self.device in ['cpu', torch.device('cpu')] or isinstance(self.kernel_obj, light_kernels):
+            # cpu and light kernels are less memory intensive, use a single batch
+            M_batch_size = max(min(n, max_cheap_batch_size), 1)
         else:
             total_memory_possible = torch.cuda.get_device_properties(self.device).total_memory
             curr_mem_use = torch.cuda.memory_allocated()
