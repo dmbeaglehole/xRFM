@@ -110,6 +110,7 @@ class xRFM:
         }
         if self.rfm_params is None:
             self.rfm_params = self.default_rfm_params
+            self.rfm_params['return_best_params'] = True
     
     def tree_copy(self, tree):
         """
