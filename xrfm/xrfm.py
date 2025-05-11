@@ -708,7 +708,6 @@ class xRFM:
         """
 
         X_leaf_groups, X_leaf_group_indices, leaf_nodes = self._get_leaf_groups_and_models_on_samples(X, tree)
-
         predictions = []
         for X_leaf, leaf_node in zip(X_leaf_groups, leaf_nodes):
             if proba:
@@ -716,7 +715,7 @@ class xRFM:
             else:
                 preds = leaf_node['model'].predict(X_leaf)
             predictions.append(preds)
-
+        
         def reorder_tensor(original_tensor, order_tensor):
             """
             Args:
@@ -817,18 +816,16 @@ class xRFM:
 
         model.fit((X_train, y_train), (X_val, y_val), **self.default_rfm_params['fit'])
         return model.M
-    
+
     def _get_leaf_groups_and_models_on_samples(self, X, tree):
         """
         Get leaf groups and models for a given tree.
-        
         Parameters:
         -----------
         X : numpy.ndarray
             The data matrix with samples as rows.
         tree : dict
             The decision tree with projections and split points.
-            
         Returns:
         --------
         X_leaf_groups : list of numpy.ndarray
@@ -838,39 +835,48 @@ class xRFM:
         leaf_models : list
             List of models stored at the leaf nodes.
         """
-        # Helper function to recursively group data points
-        def group_samples_by_node(X, indices, node):
-            if node['type'] == 'leaf':
-                # We've reached a leaf node, return the samples and their indices
-                return [(X, indices, node)]
+        # Initialize results lists
+        X_leaf_groups = []
+        X_leaf_group_indices = []
+        leaf_nodes = []
+        
+        # Initialize stack with the root node and all sample indices
+        sample_indices = torch.arange(X.shape[0], device=self.device)
+        stack = [(X, sample_indices, tree)]
+        
+        # Iterative traversal of the tree
+        while stack:
+            current_X, current_indices, current_node = stack.pop()
             
-            # Compute projections for all samples in X
-            projections = X @ node['split_direction']
+            # If we've reached a leaf node, store the results
+            if current_node['type'] == 'leaf':
+                X_leaf_groups.append(current_X)
+                X_leaf_group_indices.append(current_indices)
+                leaf_nodes.append(current_node)
+                continue
+            
+            # Compute projections for all samples in current_X
+            projections = current_X @ current_node['split_direction']
             
             # Split samples based on projection values
-            left_mask = projections <= node['split_point']
+            left_mask = projections <= current_node['split_point']
             right_mask = ~left_mask
             
-            # Recursive calls for left and right children
-            left_groups = group_samples_by_node(
-                X[left_mask], indices[left_mask], node['left']
-            ) if any(left_mask) else []
+            # Add right child to stack (will be processed first since we're using pop())
+            if right_mask.sum() > 0:
+                stack.append((
+                    current_X[right_mask], 
+                    current_indices[right_mask], 
+                    current_node['right']
+                ))
             
-            right_groups = group_samples_by_node(
-                X[right_mask], indices[right_mask], node['right']
-            ) if any(right_mask) else []
-            
-            # Combine and return all groups
-            return left_groups + right_groups
-        
-        # Start recursive grouping with all indices
-        sample_indices = torch.arange(X.shape[0], device=self.device)
-        leaf_node_data = group_samples_by_node(X, sample_indices, tree)
-        
-        # Separate the grouped data into the expected return format
-        X_leaf_groups = [data[0] for data in leaf_node_data]
-        X_leaf_group_indices = [data[1] for data in leaf_node_data]
-        leaf_nodes = [data[2] for data in leaf_node_data]
+            # Add left child to stack
+            if left_mask.sum() > 0:
+                stack.append((
+                    current_X[left_mask], 
+                    current_indices[left_mask], 
+                    current_node['left']
+                ))
         
         return X_leaf_groups, X_leaf_group_indices, leaf_nodes
     
