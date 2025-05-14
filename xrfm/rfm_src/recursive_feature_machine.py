@@ -139,7 +139,7 @@ class RFM(torch.nn.Module):
 
     def update_best_params(self, best_metric, best_alphas, best_M, best_sqrtM, best_iter, best_bandwidth, current_metric, current_iter):
         # if classification and accuracy higher, or if regression and mse lower
-        maximize_metric = self.tuning_metric in ['accuracy', 'auc', 'f1']
+        maximize_metric = self.tuning_metric in ['accuracy', 'auc', 'f1', 'top_agop_vector_auc', 'top_agop_vector_pearson_r', 'top_agop_vectors_ols_auc']
         if maximize_metric and current_metric > best_metric:
             best_metric = current_metric
             best_alphas = self.tensor_copy(self.weights)
@@ -368,6 +368,7 @@ class RFM(torch.nn.Module):
         self.early_stop_rfm = early_stop_rfm
         self.early_stop_multiplier = early_stop_multiplier
         self.center_grads = center_grads
+        self.top_k = kwargs.get('top_k', None)
 
         X_train, y_train, X_val, y_val = self.validate_data(train_data, val_data)
 
@@ -400,6 +401,24 @@ class RFM(torch.nn.Module):
                 val_auc = val_metrics['auc']
                 if self.verbose:
                     print(f"Round {i}, Val AUC: {val_auc:.4f}")
+            elif self.tuning_metric == 'top_agop_vector_auc':
+                self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
+                val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_auc'])
+                val_top_agop_vector_auc = val_metrics['top_agop_vector_auc']
+                if self.verbose:
+                    print(f"Round {i}, Val Top AGOP Vector AUC: {val_top_agop_vector_auc:.4f}")
+            elif self.tuning_metric == 'top_agop_vector_pearson_r':
+                self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
+                val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_pearson_r'])
+                val_top_agop_vector_pearson_r = val_metrics['top_agop_vector_pearson_r']
+                if self.verbose:
+                    print(f"Round {i}, Val Top AGOP Vector Pearson R: {val_top_agop_vector_pearson_r:.4f}")
+            elif self.tuning_metric == 'top_agop_vectors_ols_auc':
+                self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
+                val_metrics = self.score(X_val, y_val, metrics=['top_agop_vectors_ols_auc'])
+                val_top_agop_vectors_ols_auc = val_metrics['top_agop_vectors_ols_auc']
+                if self.verbose:
+                    print(f"Round {i}, Val Top AGOP Vectors OLS AUC: {val_top_agop_vectors_ols_auc:.4f}")
             else:
                 val_metrics = self.score(X_val, y_val, metrics=['mse'])
                 val_mse = val_metrics['mse']
@@ -445,6 +464,21 @@ class RFM(torch.nn.Module):
                 final_val_auc = final_val_metrics['auc']
                 if self.verbose:
                     print(f"Final Val AUC: {final_val_auc:.4f}")
+            elif self.tuning_metric == 'top_agop_vector_auc':
+                final_val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_auc'])
+                final_val_top_agop_vector_auc = final_val_metrics['top_agop_vector_auc']
+                if self.verbose:
+                    print(f"Final Val Top AGOP Vector AUC: {final_val_top_agop_vector_auc:.4f}")
+            elif self.tuning_metric == 'top_agop_vector_pearson_r':
+                final_val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_pearson_r'])
+                final_val_top_agop_vector_pearson_r = final_val_metrics['top_agop_vector_pearson_r']
+                if self.verbose:
+                    print(f"Final Val Top AGOP Vector Pearson R: {final_val_top_agop_vector_pearson_r:.4f}")
+            elif self.tuning_metric == 'top_agop_vectors_ols_auc':
+                final_val_metrics = self.score(X_val, y_val, metrics=['top_agop_vectors_ols_auc'])
+                final_val_top_agop_vectors_ols_auc = final_val_metrics['top_agop_vectors_ols_auc']
+                if self.verbose:
+                    print(f"Final Val Top AGOP Vectors OLS AUC: {final_val_top_agop_vectors_ols_auc:.4f}")
             else:
                 final_val_metrics = self.score(X_val, y_val, metrics=['mse'])
                 final_val_mse = final_val_metrics['mse']
@@ -464,9 +498,10 @@ class RFM(torch.nn.Module):
             self.kernel_obj.bandwidth = best_bandwidth
 
         self.best_iter = best_iter
-        self.agop_best_model = self.M
-        if self.agop_best_model is None: # ensure agop_best_model is always set.
-            self.agop_best_model = self.fit_M(X_train, y_train.shape[-1], inplace=False, **kwargs)
+
+        if kwargs.get('get_agop_best_model', False):
+            # fit AGOP of best model
+            self.agop_best_model = self.fit_M(X_train, y_train, inplace=False, **kwargs)
 
         return Ms if return_Ms else None
     
@@ -565,6 +600,56 @@ class RFM(torch.nn.Module):
                     out_metrics['auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
             else:
                 out_metrics['auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
+
+        if 'top_agop_vector_auc' in metrics:
+            assert len(targets.shape)==1 or targets.shape[1]==1, "Top AGOP Vector AUC is only defined for binary classification"
+            _, U = torch.lobpcg(self.agop, k=1)
+            top_eigenvector = U[:, 0]
+            projections = samples @ top_eigenvector
+            projections = projections.reshape(targets.shape)
+            plus_auc = roc_auc_score(targets.cpu().numpy(), torch.sigmoid(projections).cpu().numpy())
+            minus_auc = roc_auc_score(targets.cpu().numpy(), torch.sigmoid(-projections).cpu().numpy())
+            out_metrics['top_agop_vector_auc'] = max(plus_auc, minus_auc)
+
+        if 'top_agop_vector_pearson_r' in metrics:
+            assert len(targets.shape)==1 or targets.shape[1]==1, "Top AGOP Vector Pearson R is only defined for binary classification"
+            _, U = torch.lobpcg(self.agop, k=1)
+            top_eigenvector = U[:, 0]
+            projections = samples @ top_eigenvector
+            projections = projections.reshape(-1, 1)
+            targets = targets.reshape(-1, 1)
+            out_metrics['top_agop_vector_pearson_r'] = torch.abs(torch.corrcoef(torch.cat((projections, targets), dim=-1).T))[0, 1].item()
+
+        if 'top_agop_vectors_ols_auc' in metrics:
+            top_k = self.top_k
+            print(f"Computing Top AGOP Vectors OLS AUC for {top_k} eigenvectors")
+            start_time = time.time()
+            _, U = torch.lobpcg(self.agop, k=top_k)
+            end_time = time.time()
+            print(f"Time taken to compute top {top_k} eigenvectors: {end_time - start_time} seconds")
+
+            
+            top_eigenvectors = U[:, :top_k]
+            projections = samples @ top_eigenvectors
+            projections = projections.reshape(-1, top_k)
+
+            start_time = time.time()
+            XtX = projections.T @ projections
+            Xty = projections.T @ targets
+            end_time = time.time()
+            print(f"Time taken to compute XtX and Xty: {end_time - start_time} seconds")
+
+            start_time = time.time()
+            betas = torch.linalg.pinv(XtX) @ Xty
+            end_time = time.time()
+            print(f"Time taken to solve OLS: {end_time - start_time} seconds")
+
+            start_time = time.time()
+            preds = torch.sigmoid(projections @ betas).reshape(targets.shape)
+            end_time = time.time()
+            print(f"Time taken to compute OLS predictions: {end_time - start_time} seconds")
+
+            out_metrics['top_agop_vectors_ols_auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
 
         return out_metrics
     

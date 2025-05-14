@@ -100,6 +100,7 @@ class xRFM:
                 "bandwidth_mode": "constant"
             },
             'fit' : {
+                "get_agop_best_model": True,
                 "return_best_params": False,
                 "reg": 1e-3,
                 "iters": 0,
