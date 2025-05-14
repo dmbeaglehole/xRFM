@@ -1,5 +1,4 @@
 import torch
-import numpy as np
 from xrfm.rfm_src import RFM, matrix_power
 from torchmetrics.functional.classification import accuracy
 from sklearn.metrics import roc_auc_score
@@ -71,7 +70,7 @@ class xRFM:
     def __init__(self, rfm_params=None, min_subset_size=60_000,
                  max_depth=None, device=None, n_trees=1, n_tree_iters=0, 
                  split_method='top_vector_agop_on_subset', tuning_metric='mse', 
-                 categorical_info=None):
+                 categorical_info=None, label_centering=None):
         self.min_subset_size = min_subset_size
         self.rfm_params = rfm_params
         self.max_depth = max_depth
@@ -85,7 +84,8 @@ class xRFM:
         self.split_method = split_method
         self.maximizing_metric = tuning_metric in ['accuracy', 'auc']
         self.categorical_info = categorical_info
-
+        self.label_centering = label_centering
+        
         # parameters for refilling the validation set at leaves
         self.min_val_size = 1500
         self.val_size_frac = 0.2
@@ -101,7 +101,6 @@ class xRFM:
             },
             'fit' : {
                 "return_best_params": False,
-                "fit_last_M": True,
                 "reg": 1e-3,
                 "iters": 0,
                 "early_stop_rfm": False,
@@ -321,7 +320,8 @@ class xRFM:
 
             # Create and fit a TabRFM model on this subset
             model = RFM(**self.rfm_params['model'], tuning_metric=self.tuning_metric, 
-                        categorical_info=self.categorical_info, device=self.device)
+                        categorical_info=self.categorical_info, device=self.device, 
+                        label_centering=self.label_centering)
             
             model.fit((X, y), (X_val, y_val), **self.rfm_params['fit'])
             return {'type': 'leaf', 'model': model, 'train_indices': train_indices, 'is_root': is_root}
@@ -525,7 +525,7 @@ class xRFM:
             y = y.unsqueeze(-1)
         if len(y_val.shape) == 1:
             y_val = y_val.unsqueeze(-1)
-            
+
         # Build multiple trees
         self.trees = []
         for _ in tqdm(range(self.n_trees), desc="Building trees"):
@@ -815,7 +815,8 @@ class xRFM:
         y_val = y[subset_val_indices]
 
         model.fit((X_train, y_train), (X_val, y_val), **self.default_rfm_params['fit'])
-        return model.M
+        agop = model.agop_best_model
+        return agop
 
     def _get_leaf_groups_and_models_on_samples(self, X, tree):
         """

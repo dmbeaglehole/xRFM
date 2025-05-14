@@ -23,7 +23,7 @@ class RFM(torch.nn.Module):
 
     def __init__(self, kernel: Union[Kernel, str], iters=5, bandwidth=10., exponent=1., bandwidth_mode='constant', 
                  agop_power=0.5, device=None, diag=False, verbose=True, mem_gb=None, tuning_metric='mse', 
-                 categorical_info=None, fast_categorical=True):
+                 categorical_info=None, fast_categorical=True, label_centering=None):
         """
         :param device: device to run the model on
         :param diag: if True, Mahalanobis matrix M will be diagonal
@@ -50,7 +50,8 @@ class RFM(torch.nn.Module):
         self.verbose = verbose
         self.tuning_metric = tuning_metric
         self.use_sqrtM = self.kernel_obj.use_sqrtM
-
+        self.label_centering = label_centering
+        self.y_mean = None
         
         if categorical_info is not None and fast_categorical: 
             if isinstance(self.kernel_obj, ProductLaplaceKernel):
@@ -167,6 +168,7 @@ class RFM(torch.nn.Module):
         self.centers = centers
 
         if self.fit_using_eigenpro:
+            assert not self.label_centering, "EigenPro does not yet support label centering"
             if self.prefit_eigenpro:
                 random_indices = torch.randperm(centers.shape[0])[:self.max_lstsq_size]
                 if self.verbose:
@@ -180,6 +182,11 @@ class RFM(torch.nn.Module):
             self.weights = self.fit_predictor_eigenpro(centers, targets, bs=bs, lr_scale=lr_scale, 
                                                        initial_weights=initial_weights, **kwargs)
         else:
+            if self.label_centering=='mean':
+                self.y_mean = targets.mean(dim=0, keepdim=True)
+                targets = targets-self.y_mean
+            elif self.label_centering=='threshold':
+                targets = targets-0.5
             self.weights = self.fit_predictor_lstsq(centers, targets, solver=solver)
 
     def fit_predictor_lstsq(self, centers, targets, solver='solve'):
@@ -224,7 +231,12 @@ class RFM(torch.nn.Module):
         for i in range(0, samples.shape[0], max_batch_size):
             out_batch = self.kernel(samples[i:i+max_batch_size].to(self.device), self.centers.to(self.device)) @ self.weights.to(self.device)
             out.append(out_batch)
-        return self.convert_to_format(torch.cat(out, dim=0), original_format)
+        out = torch.cat(out, dim=0)
+        if self.label_centering=='mean':
+            out += self.y_mean
+        elif self.label_centering=='threshold':
+            out += 0.5
+        return self.convert_to_format(out, original_format)
 
     def validate_samples(self, samples):
         original_format = {}
@@ -406,12 +418,12 @@ class RFM(torch.nn.Module):
                     (not self.minimize and val_metric < best_metric / self.early_stop_multiplier):
                     print(f"Early stopping at iteration {i}")
                     if not return_best_params:
-                        self.fit_M(X_train, y_train, **kwargs) # need to fit last M from final fit, to match default behavior
+                        self.fit_M(X_train, y_train.shape[-1], **kwargs) # need to fit last M from final fit, to match default behavior
 
                     early_stopped = True
                     break
 
-            self.fit_M(X_train, y_train, **kwargs)
+            self.fit_M(X_train, y_train.shape[-1], **kwargs)
             
             del self.weights
             
@@ -454,7 +466,7 @@ class RFM(torch.nn.Module):
         self.best_iter = best_iter
         self.agop_best_model = self.M
         if self.agop_best_model is None: # ensure agop_best_model is always set.
-            self.agop_best_model = self.fit_M(X_train, y_train, inplace=False, **kwargs)
+            self.agop_best_model = self.fit_M(X_train, y_train.shape[-1], inplace=False, **kwargs)
 
         return Ms if return_Ms else None
     
@@ -473,7 +485,7 @@ class RFM(torch.nn.Module):
         print(f"Optimal M batch size: {M_batch_size}")
         return M_batch_size
     
-    def fit_M(self, samples, labels, M_batch_size=None, inplace=True, **kwargs):
+    def fit_M(self, samples, num_classes, M_batch_size=None, inplace=True, **kwargs):
         """Applies AGOP to update the Mahalanobis matrix M."""
         
         n, d = samples.shape
@@ -484,8 +496,7 @@ class RFM(torch.nn.Module):
 
         if M_batch_size is None: 
             BYTES_PER_SCALAR = samples.element_size()
-            c = labels.shape[-1]
-            M_batch_size = self._compute_optimal_M_batch(n, c, d, scalar_size=BYTES_PER_SCALAR)
+            M_batch_size = self._compute_optimal_M_batch(n, num_classes, d, scalar_size=BYTES_PER_SCALAR)
         
         batches = torch.arange(n).split(M_batch_size)
 
@@ -523,6 +534,7 @@ class RFM(torch.nn.Module):
         out_metrics = {}
         if 'accuracy' in metrics:
             preds = self.predict_proba(samples.to(self.device)).to(targets.device)
+
             if preds.shape[-1]==1:
                 num_classes = len(torch.unique(targets))
                 if num_classes==2:
@@ -540,7 +552,7 @@ class RFM(torch.nn.Module):
             out_metrics['mse'] = (targets - preds).pow(2).mean()
 
         if 'f1' in metrics:
-            preds = self.predict(samples.to(self.device)).to(targets.device)
+            preds = self.predict_proba(samples.to(self.device)).to(targets.device)
             out_metrics['f1'] = f1_score(preds, targets, num_classes=preds.shape[-1]).item()
 
         if 'auc' in metrics:
@@ -558,7 +570,7 @@ class RFM(torch.nn.Module):
     
     @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     def predict_proba(self, samples, eps=1e-3):
-        predictions = self.predict(samples)
+        predictions = self.predict(samples) 
         if predictions.shape[1] == 1:
             smooth_clamped = SmoothClampedReLU(beta=self.proba_beta)
             predictions = smooth_clamped(predictions)
