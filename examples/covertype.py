@@ -49,14 +49,18 @@ bw = 5.
 reg = 1e-3
 iters = 0
 rfm_params = {
-    "kernel": 'l2',
-    "bandwidth": bw,
-    "exponent": 1.0,
-    "diag": False,
-    "reg": reg,
-    "iters": iters,
-    "M_batch_size": len(X_train),
-    "verbose": True,
+    'model': {
+        "kernel": 'l2_high_dim',
+        "bandwidth": bw,
+        "exponent": 1.0,
+        "diag": False,
+    },
+    'fit': {
+        "reg": reg,
+        "iters": iters,
+        "M_batch_size": len(X_train),
+        "verbose": True,
+    }
 }
 model = xRFM(rfm_params, device=DEVICE, min_subset_size=20_000, tuning_metric='accuracy', split_method='top_vector_agop_on_subset')
 
@@ -68,25 +72,3 @@ print("Predicting on test set")
 y_pred = model.predict_proba(X_test)
 acc = accuracy(y_pred, y_test)
 print(f'xRFM, top vector AGOP splitting time: {end_time-start_time:g} s, acc: {acc.item():g}')
-print("--------------------------------")
-rfm_params = {
-    "kernel": 'l2',
-    "bandwidth": bw,
-    "exponent": 1.0,
-    "diag": False,
-    "reg": reg,
-    "iters": iters,
-    "M_batch_size": len(X_train),
-    "verbose": False,
-    "early_stop_rfm": True,
-}
-model = xRFM(rfm_params, device=DEVICE, min_subset_size=20_000, tuning_metric='accuracy', split_method='top_pc_agop_on_subset')
-
-start_time = time.time()
-model.fit(X_train, y_train, X_val, y_val)
-end_time = time.time()
-
-y_pred = model.predict(X_test)
-acc = accuracy(y_pred, y_test)
-print(f'Deterministic recursive AGOP splitting xRFM, top PC AGOP splitting time 0 iters: {end_time-start_time:g} s, acc: {acc.item():g}')
-print("--------------------------------")

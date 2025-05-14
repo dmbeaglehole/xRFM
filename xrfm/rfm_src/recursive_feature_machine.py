@@ -458,7 +458,7 @@ class RFM(torch.nn.Module):
                 final_val_metrics = self.score(X_val, y_val, metrics=['accuracy'])
                 final_val_acc = final_val_metrics['accuracy']
                 if self.verbose:
-                    print(f"Final Val Acc: {100*final_val_acc:.2f}")
+                    print(f"Final Val Acc: {100*final_val_acc:.2f}%")
             elif self.tuning_metric == 'auc':
                 final_val_metrics = self.score(X_val, y_val, metrics=['auc'])
                 final_val_auc = final_val_metrics['auc']
