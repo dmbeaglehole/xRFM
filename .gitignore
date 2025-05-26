@@ -1,3 +1,10 @@
+# Ignore all files in the examples directory
+examples/california_housing.py
+examples/cat_test.py
+examples/grouping_test.py
+examples/kdd.py
+examples/low_rank.ipynb
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

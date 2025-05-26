@@ -104,37 +104,3 @@ end_time = time.time()
 y_pred = model.predict_proba(X_test)
 mse = mse_loss(y_pred, y_test)
 print(f'Generic time: {end_time-start_time:g} s, mse: {mse.item():g}')
-
-
-############################ XGBOOST #############################
-# import xgboost as xgb
-# # Initialize the XGBoost classifier with verbose parameters
-# model = xgb.XGBClassifier(
-#     n_estimators=100,            # Number of gradient boosted trees
-#     learning_rate=0.1,           # Step size shrinkage to prevent overfitting
-#     max_depth=3,                 # Maximum tree depth
-#     min_child_weight=1,          # Minimum sum of instance weight needed in a child
-#     subsample=1,                 # Subsample ratio of training instances
-#     colsample_bytree=1,          # Subsample ratio of columns when constructing each tree
-#     objective='multi:softprob',  # Multiclass probability output
-#     verbosity=2                  # Verbose output (0=silent, 1=warning, 2=info, 3=debug)
-# )
-
-# # Fit the model with verbose output
-# print("Starting model training...")
-# eval_set = [(X_val.cpu().numpy(), y_val.argmax(dim=1).cpu().numpy())]
-
-# model.fit(
-#     X_train.cpu().numpy(),
-#     y_train.argmax(dim=1).cpu().numpy(),
-#     eval_set=eval_set,                   # Validation data for evaluation
-#     verbose=True,                        # Print progress messages
-# )
-
-# # Make predictions with verbose output
-# print("\nMaking predictions...")
-# y_pred = model.predict(X_test.cpu().numpy())
-
-# # Evaluate model performance
-# accuracy = accuracy_score(y_test.argmax(dim=1).cpu().numpy(), y_pred)
-# print(f"Accuracy: {accuracy:.4f}")
