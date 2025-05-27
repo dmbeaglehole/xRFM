@@ -4,7 +4,7 @@
 
 Can be installed using the command
 ```
- pip install .
+pip install git+https://github.com/dmbeaglehole/xRFM.git 
 ```
 
 # Standard Usage
