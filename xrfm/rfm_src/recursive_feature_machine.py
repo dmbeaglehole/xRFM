@@ -23,7 +23,7 @@ class RFM(torch.nn.Module):
 
     def __init__(self, kernel: Union[Kernel, str], iters=5, bandwidth=10., exponent=1., bandwidth_mode='constant', 
                  agop_power=0.5, device=None, diag=False, verbose=True, mem_gb=None, tuning_metric='mse', 
-                 categorical_info=None, fast_categorical=True, label_centering=None):
+                 categorical_info=None, fast_categorical=True):
         """
         :param device: device to run the model on
         :param diag: if True, Mahalanobis matrix M will be diagonal
@@ -50,8 +50,6 @@ class RFM(torch.nn.Module):
         self.verbose = verbose
         self.tuning_metric = tuning_metric
         self.use_sqrtM = self.kernel_obj.use_sqrtM
-        self.label_centering = label_centering
-        self.y_mean = None
         
         if categorical_info is not None and fast_categorical: 
             if isinstance(self.kernel_obj, ProductLaplaceKernel):
@@ -182,11 +180,6 @@ class RFM(torch.nn.Module):
             self.weights = self.fit_predictor_eigenpro(centers, targets, bs=bs, lr_scale=lr_scale, 
                                                        initial_weights=initial_weights, **kwargs)
         else:
-            if self.label_centering=='mean':
-                self.y_mean = targets.mean(dim=0, keepdim=True)
-                targets = targets-self.y_mean
-            elif self.label_centering=='threshold':
-                targets = targets-0.5
             self.weights = self.fit_predictor_lstsq(centers, targets, solver=solver)
 
     def fit_predictor_lstsq(self, centers, targets, solver='solve'):
@@ -232,10 +225,6 @@ class RFM(torch.nn.Module):
             out_batch = self.kernel(samples[i:i+max_batch_size].to(self.device), self.centers.to(self.device)) @ self.weights.to(self.device)
             out.append(out_batch)
         out = torch.cat(out, dim=0)
-        if self.label_centering=='mean':
-            out += self.y_mean
-        elif self.label_centering=='threshold':
-            out += 0.5
         return self.convert_to_format(out, original_format)
 
     def validate_samples(self, samples):
@@ -335,7 +324,7 @@ class RFM(torch.nn.Module):
     
     @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True") # to prevent OOM issue due to memory fragmentation
     def fit(self, train_data, val_data=None, iters=None, method='lstsq', reg=None, center_grads=False,
-            verbose=None, M_batch_size=None, ep_epochs=None, return_best_params=True, bs=None, 
+            verbose=False, M_batch_size=None, ep_epochs=None, return_best_params=True, bs=None, 
             return_Ms=False, lr_scale=1, total_points_to_sample=None, solver='solve', 
             tuning_metric=None, prefit_eigenpro=True, early_stop_rfm=True, early_stop_multiplier=1.1, **kwargs):
         """
@@ -369,6 +358,7 @@ class RFM(torch.nn.Module):
         self.early_stop_multiplier = early_stop_multiplier
         self.center_grads = center_grads
         self.top_k = kwargs.get('top_k', None)
+        assert 'diag' not in kwargs, "diag should be set in the constructor"
 
         X_train, y_train, X_val, y_val = self.validate_data(train_data, val_data)
 
@@ -443,7 +433,7 @@ class RFM(torch.nn.Module):
                     break
 
             self.fit_M(X_train, y_train.shape[-1], **kwargs)
-            
+
             del self.weights
             
             if return_Ms:
@@ -569,19 +559,15 @@ class RFM(torch.nn.Module):
         out_metrics = {}
         if 'accuracy' in metrics:
             preds = self.predict_proba(samples.to(self.device)).to(targets.device)
+            preds_ = torch.argmax(preds,dim=-1)
+            targets_ = torch.argmax(targets,dim=-1)
+            num_classes = preds.shape[-1]
 
-            if preds.shape[-1]==1:
-                num_classes = len(torch.unique(targets))
-                if num_classes==2:
-                    preds = torch.where(preds > 0.5, 1, 0).reshape(targets.shape)
-                    out_metrics['accuracy'] = accuracy(preds, targets, task="binary").item()
-                else:
-                    out_metrics['accuracy'] = accuracy(preds, targets, task="multiclass", num_classes=num_classes).item()
+            if num_classes==2:
+                out_metrics['accuracy'] = accuracy(preds_, targets_, task="binary").item()
             else:
-                preds_ = torch.argmax(preds,dim=-1)
-                targets_ = torch.argmax(targets,dim=-1)
-                out_metrics['accuracy'] = accuracy(preds_, targets_, task="multiclass", num_classes=preds.shape[-1]).item()
-        
+                out_metrics['accuracy'] = accuracy(preds_, targets_, task="multiclass", num_classes=num_classes).item()
+
         if 'mse' in metrics:
             preds = self.predict(samples.to(self.device)).to(targets.device)
             out_metrics['mse'] = (targets - preds).pow(2).mean()
@@ -592,12 +578,10 @@ class RFM(torch.nn.Module):
 
         if 'auc' in metrics:
             preds = self.predict_proba(samples.to(self.device))
-            if preds.shape[-1]==1:
-                num_classes = len(torch.unique(targets))
-                if num_classes==2:
-                    out_metrics['auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy())
-                else:
-                    out_metrics['auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
+            num_classes = preds.shape[-1]
+            
+            if num_classes==2:
+                out_metrics['auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy()[:,1])
             else:
                 out_metrics['auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
 
@@ -659,10 +643,11 @@ class RFM(torch.nn.Module):
         if predictions.shape[1] == 1:
             smooth_clamped = SmoothClampedReLU(beta=self.proba_beta)
             predictions = smooth_clamped(predictions)
+            return torch.cat([1-predictions, predictions], dim=1) # 2 outputs, 1 per class
         else:
             min_preds = predictions.min(dim=1, keepdim=True).values
             max_preds = predictions.max(dim=1, keepdim=True).values 
             predictions = (predictions - min_preds) / (max_preds - min_preds) # normalize predictions to [0, 1]
             predictions = torch.clamp(predictions, eps, 1-eps) # clamp predictions to [eps, 1-eps]
             predictions /= predictions.sum(dim=1, keepdim=True) # normalize predictions to sum to 1
-        return predictions
+            return predictions

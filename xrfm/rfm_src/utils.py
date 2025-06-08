@@ -29,14 +29,20 @@ def f1_score(preds, targets, num_classes, min_float=1e-8):
         targets = torch.argmax(targets, dim=-1)
     
     # Calculate F1 score components
-    tp = torch.zeros(num_classes)
-    fp = torch.zeros(num_classes)
-    fn = torch.zeros(num_classes)
-    
-    for c in range(num_classes):
-        tp[c] = ((preds == c) & (targets == c)).sum().float()
-        fp[c] = ((preds == c) & (targets != c)).sum().float()
-        fn[c] = ((preds != c) & (targets == c)).sum().float()
+    if num_classes == 2:
+        # get F1 on positive class
+        tp = ((preds[:,1] == 1) & (targets[:,1] == 1)).sum().float()
+        fp = ((preds[:,1] == 1) & (targets[:,1] == 0)).sum().float()
+        fn = ((preds[:,1] == 0) & (targets[:,1] == 1)).sum().float()
+    else:
+        tp = torch.zeros(num_classes)
+        fp = torch.zeros(num_classes)
+        fn = torch.zeros(num_classes)
+        
+        for c in range(num_classes):
+            tp[c] = ((preds == c) & (targets == c)).sum().float()
+            fp[c] = ((preds == c) & (targets != c)).sum().float()
+            fn[c] = ((preds != c) & (targets == c)).sum().float()
     
     # Avoid division by zero
     precision = tp / (tp + fp + min_float)

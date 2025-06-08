@@ -46,95 +46,68 @@ print(f'y_train.shape: {y_train.shape}')
 print(f'y_val.shape: {y_val.shape}')
 print(f'y_test.shape: {y_test.shape}')
 
-############################ RP-RFM #############################
+
 DEVICE = torch.device("cuda")
-bw = 5.
-reg = 1e-3
-iters = 3
-kernel_obj = ProductLaplaceKernel(bandwidth=bw, exponent=1.0)
-rfm_params = {
-    "kernel": kernel_obj,
-    "diag": False,
-    "reg": reg,
-    "iters": iters,
-    "M_batch_size": len(X_train),
-    "verbose": True,
+xrfm_params = {
+    'model': {
+        'kernel': "l1",
+        'bandwidth': bw,
+        'exponent': 1.0,
+        'diag': False,
+        'bandwidth_mode': "constant"
+    },
+    'fit': {
+        'reg': reg,
+        'iters': iters,
+        'M_batch_size': len(X_train),
+        'verbose': False,
+        'early_stop_rfm': True,
+    }
 }
-model = RP_RFM(rfm_params, device=DEVICE, min_subset_size=15_000, n_trees=3, n_tree_iters=0, tuning_metric='mse', split_method='linear')
+default_rfm_params = {
+    'model': {
+        "kernel": 'l2_high_dim',
+        "exponent": 1.0,
+        "bandwidth": 10.0,
+        "diag": False,
+        "bandwidth_mode": "constant"
+    },
+    'fit' : {
+        "get_agop_best_model": True,
+        "return_best_params": False,
+        "reg": 1e-3,
+        "iters": 0,
+        "early_stop_rfm": False,
+        "verbose": False
+    }
+}
+xrfm_model = xRFM(xrfm_params, device=DEVICE, min_subset_size=min_subset_size, tuning_metric='mse', 
+                  default_rfm_params=default_rfm_params, 
+                  split_method='fixed_vector', 
+                  fixed_vector=torch.ones(d).cuda().to(X_train.dtype))
+
+
 
 start_time = time.time()
-
-model.fit(X_train, y_train, X_val, y_val)
-
+xrfm_model.fit(X_train, y_train, X_test, y_test)
 end_time = time.time()
 
-print("Predicting on test set")
-y_pred = model.predict_proba(X_test)
-print(y_pred.shape)
-print(y_test.shape)
-mse = mse_loss(y_pred, y_test)
-print(f'RP-RFM time: {end_time-start_time:g} s, mse: {mse.item():g}')
+y_pred = xrfm_model.predict(X_test)
+loss = mse_loss(y_pred, y_test)
+print(f'xRFM time: {end_time-start_time:g} s, loss: {loss.item():g}')
+print('-'*150)
 
-
-############################ TABRFM #############################
-DEVICE = torch.device("cuda")
-model = TabRFM(kernel_obj, diag=False, device=DEVICE, tuning_metric='mse')
-
-# X_train_subset = X_train[:70_000]
-# y_train_subset = y_train[:70_000]
-# X_val_subset = X_val[:20_000]
-# y_val_subset = y_val[:20_000]
-X_train_subset = X_train
-y_train_subset = y_train
-X_val_subset = X_val
-y_val_subset = y_val
+rfm_params = {**xrfm_params['model'], **xrfm_params['fit']}
+rp_rfm_model = RP_RFM(rfm_params, device=DEVICE, min_subset_size=min_subset_size, 
+                      tuning_metric='mse', n_tree_iters=0, n_trees=1,
+                      split_method='fixed_vector', 
+                      fixed_vector=torch.ones(d).cuda().to(X_train.dtype))
 
 start_time = time.time()
-
-model.fit(
-    (X_train_subset, y_train_subset), 
-    (X_val_subset, y_val_subset), 
-    iters=iters,
-    M_batch_size=len(X_train_subset),
-    reg=reg,
-)
-
+rp_rfm_model.fit(X_train, y_train, X_test, y_test)
 end_time = time.time()
 
-y_pred = model.predict_proba(X_test)
-mse = mse_loss(y_pred, y_test)
-print(f'Generic time: {end_time-start_time:g} s, mse: {mse.item():g}')
-
-
-############################ XGBOOST #############################
-# import xgboost as xgb
-# # Initialize the XGBoost classifier with verbose parameters
-# model = xgb.XGBClassifier(
-#     n_estimators=100,            # Number of gradient boosted trees
-#     learning_rate=0.1,           # Step size shrinkage to prevent overfitting
-#     max_depth=3,                 # Maximum tree depth
-#     min_child_weight=1,          # Minimum sum of instance weight needed in a child
-#     subsample=1,                 # Subsample ratio of training instances
-#     colsample_bytree=1,          # Subsample ratio of columns when constructing each tree
-#     objective='multi:softprob',  # Multiclass probability output
-#     verbosity=2                  # Verbose output (0=silent, 1=warning, 2=info, 3=debug)
-# )
-
-# # Fit the model with verbose output
-# print("Starting model training...")
-# eval_set = [(X_val.cpu().numpy(), y_val.argmax(dim=1).cpu().numpy())]
-
-# model.fit(
-#     X_train.cpu().numpy(),
-#     y_train.argmax(dim=1).cpu().numpy(),
-#     eval_set=eval_set,                   # Validation data for evaluation
-#     verbose=True,                        # Print progress messages
-# )
-
-# # Make predictions with verbose output
-# print("\nMaking predictions...")
-# y_pred = model.predict(X_test.cpu().numpy())
-
-# # Evaluate model performance
-# accuracy = accuracy_score(y_test.argmax(dim=1).cpu().numpy(), y_pred)
-# print(f"Accuracy: {accuracy:.4f}")
+y_pred = rp_rfm_model.predict(X_test)
+loss = mse_loss(y_pred, y_test)
+print(f'RP-RFM time: {end_time-start_time:g} s, loss: {loss.item():g}')
+print('-'*150)

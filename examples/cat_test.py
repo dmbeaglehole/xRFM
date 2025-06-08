@@ -1,18 +1,17 @@
 import numpy as np
 import torch
-from rfm import LaplaceRFM, GeneralizedLaplaceRFM
-from rfm.generic_kernels import LaplaceKernel, ProductLaplaceKernel, LpqLaplaceKernel
-from rfm.generic_kernels import SumPowerLaplaceKernel
-from rfm.recursive_feature_machine import GenericRFM
 import time
 
 np.random.seed(0)
 torch.manual_seed(0)
 
+def mse_loss(y_pred, y_true):
+    return (y_pred - y_true).pow(2).mean()
+
 M_batch_size = 256
 
 
-n = 2000 # samples
+n = 4000 # samples
 d = 10  # dimension
 n_cats = [200, 200]
 
@@ -51,91 +50,90 @@ for n_cat in n_cats:
     categorical_indices.append(torch.arange(n_cat, device=X_train.device) + d)
     d += n_cat
 
-# print(f'X_train.shape: {X_train.shape}, y_train.shape: {y_train.shape}')
-d=700
-a = torch.randn(d, d)
-a = a@a.T
-a = a.float()
 
-from scipy.linalg import sqrtm, fractional_matrix_power
-M_cpu = torch.randn(d, d)
-M_cpu = M_cpu@M_cpu.T
-M_cpu = M_cpu.float()
+
+from xrfm import xRFM
+
+import sys
+sys.path.insert(0, '/u/dbeaglehole/tabrfm')
+from tabrfm.experimental.rp_rfm import RP_RFM
+
+
+DEVICE = torch.device("cuda")
+bw = 5.
+reg = 1e-3
+iters = 1
+min_subset_size = 1000
+
+DEVICE = torch.device("cuda")
+xrfm_params = {
+    'model': {
+        'kernel': "l1",
+        'bandwidth': bw,
+        'exponent': 1.0,
+        'diag': False,
+        'bandwidth_mode': "constant"
+    },
+    'fit': {
+        'reg': reg,
+        'iters': iters,
+        'M_batch_size': len(X_train),
+        'verbose': False,
+        'early_stop_rfm': True,
+    }
+}
+default_rfm_params = {
+    'model': {
+        "kernel": 'l2_high_dim',
+        "exponent": 1.0,
+        "bandwidth": 10.0,
+        "diag": False,
+        "bandwidth_mode": "constant"
+    },
+    'fit' : {
+        "get_agop_best_model": True,
+        "return_best_params": False,
+        "reg": 1e-3,
+        "iters": 0,
+        "early_stop_rfm": False,
+        "verbose": False
+    }
+}
+
+categorical_info = {
+    'categorical_indices': categorical_indices,
+    'categorical_vectors': categorical_vectors,
+    'numerical_indices': numerical_indices,
+}
+xrfm_model = xRFM(xrfm_params, device=DEVICE, min_subset_size=min_subset_size, 
+                  default_rfm_params=default_rfm_params, 
+                  categorical_info=categorical_info,
+                  split_method='top_vector_agop_on_subset')
+
+
+
+
+
+rfm_params = {**xrfm_params['model'], **xrfm_params['fit']}
+rp_rfm_model = RP_RFM(rfm_params, device=DEVICE, min_subset_size=min_subset_size, 
+                      n_tree_iters=0, n_trees=1,
+                      categorical_info = categorical_info,
+                      split_method='top_vector_agop_on_subset')
+
 start_time = time.time()
-M_cpu = torch.from_numpy(fractional_matrix_power(M_cpu, 0.67))
-tot = time.time()-start_time
-print(f'Time taken: {tot:g} s')
-print(M_cpu)
-exit()
-# import adit_rfm
-# start_time = time.time()
-# model = adit_rfm.rfm(
-#     (X_train, y_train), 
-#     (X_test, y_test), 
-#     L=bw, 
-#     reg=reg, 
-#     num_iters=iters
-# )
-# print(f'adit_rfm time: {time.time()-start_time:g} s')
+rp_rfm_model.fit(X_train, y_train, X_test, y_test)
+end_time = time.time()
 
+y_pred = rp_rfm_model.predict(X_test)
+loss = mse_loss(y_pred, y_test)
+print(f'RP-RFM time: {end_time-start_time:g} s, loss: {loss.item():g}')
+print('-'*150)
 
-# model = GenericRFM(LaplaceKernel(bandwidth=bw, exponent=1.0), reg=reg, device='cuda')
-# # model = GenericRFM(ProductLaplaceKernel(bandwidth=bw, exponent=1.0), diag=False, reg=reg, device='cuda', centering=True)
-# model.set_categorical_indices(numerical_indices, categorical_indices, categorical_vectors)
-# start_time = time.time()
-# model.fit(
-#     (X_train, y_train), 
-#     (X_test, y_test), 
-#     iters=iters,
-#     classification=False,
-#     M_batch_size=len(X_train),
-#     total_points_to_sample=5000
-# )
-# print(f'Generic time: {time.time()-start_time:g} s')
-
-
-# model = LaplaceRFM(bandwidth=bw, reg=reg, device='cuda')
-# start_time = time.time()
-# model.fit(
-#     (X_train, y_train), 
-#     (X_test, y_test), 
-#     iters=iters,
-#     classification=False,
-#     M_batch_size=len(X_train),
-#     total_points_to_sample=5000,
-#     verbose=False
-# )
-# print(f'Laplace time: {time.time()-start_time:g} s')
-
-# model = GenericRFM(LaplaceKernel(bandwidth=bw, exponent=1.0), reg=reg, device='cuda')
-model = GenericRFM(ProductLaplaceKernel(bandwidth=bw, exponent=1.0), diag=True, reg=reg, device='cuda')
-model.set_categorical_indices(numerical_indices, categorical_indices, categorical_vectors)
 start_time = time.time()
-model.fit(
-    (X_train, y_train), 
-    (X_test, y_test), 
-    iters=iters,
-    classification=False,
-    M_batch_size=128,
-    total_points_to_sample=num_to_sample,
-    verbose=True
-)
-# print("M matrix:")
-# print(model.M)
-print(f'Generic time new: {time.time()-start_time:g} s')
+xrfm_model.fit(X_train, y_train, X_test, y_test)
+end_time = time.time()
 
-print("="*100)
-model = GenericRFM(ProductLaplaceKernel(bandwidth=bw, exponent=1.0), diag=True, reg=reg, device='cuda')
-start_time = time.time()
-model.fit(
-    (X_train, y_train), 
-    (X_test, y_test), 
-    iters=iters,
-    classification=False,
-    M_batch_size=128,
-    total_points_to_sample=num_to_sample,
-    verbose=True
-)
-# print("M matrix:")
-# print(model.M)
-print(f'Generic time: {time.time()-start_time:g} s')
+y_pred = xrfm_model.predict(X_test)
+loss = mse_loss(y_pred, y_test)
+print(f'xRFM time: {end_time-start_time:g} s, loss: {loss.item():g}')
+print('-'*150)

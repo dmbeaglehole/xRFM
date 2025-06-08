@@ -70,7 +70,8 @@ class xRFM:
     def __init__(self, rfm_params=None, min_subset_size=60_000,
                  max_depth=None, device=None, n_trees=1, n_tree_iters=0, 
                  split_method='top_vector_agop_on_subset', tuning_metric='mse', 
-                 categorical_info=None, label_centering=None):
+                 categorical_info=None, default_rfm_params=None,
+                 fixed_vector=None):
         self.min_subset_size = min_subset_size
         self.rfm_params = rfm_params
         self.max_depth = max_depth
@@ -84,30 +85,35 @@ class xRFM:
         self.split_method = split_method
         self.maximizing_metric = tuning_metric in ['accuracy', 'auc']
         self.categorical_info = categorical_info
-        self.label_centering = label_centering
+        self.fixed_vector = fixed_vector
         
         # parameters for refilling the validation set at leaves
         self.min_val_size = 1500
         self.val_size_frac = 0.2
 
         # default parameters for the split direction model
-        self.default_rfm_params = {
-            'model': {
-                "kernel": 'l2_high_dim',
-                "exponent": 1.0,
-                "bandwidth": 10.0,
-                "diag": False,
-                "bandwidth_mode": "constant"
-            },
-            'fit' : {
-                "get_agop_best_model": True,
-                "return_best_params": False,
-                "reg": 1e-3,
-                "iters": 0,
-                "early_stop_rfm": False,
-                "verbose": False
+        print(default_rfm_params)
+        if default_rfm_params is None:
+            self.default_rfm_params = {
+                'model': {
+                    "kernel": 'l2',
+                    "exponent": 1.0,
+                    "bandwidth": 10.0,
+                    "diag": False,
+                    "bandwidth_mode": "constant"
+                },
+                'fit' : {
+                    "get_agop_best_model": True,
+                    "return_best_params": False,
+                    "reg": 1e-3,
+                    "iters": 0,
+                    "early_stop_rfm": False,
+                    "verbose": False
+                }
             }
-        }
+        else:
+            self.default_rfm_params = default_rfm_params
+
         if self.rfm_params is None:
             self.rfm_params = self.default_rfm_params
             self.rfm_params['return_best_params'] = True
@@ -182,15 +188,32 @@ class xRFM:
         
         return left_nodes + right_nodes
     
-    def collect_best_agops(self):
+    def _collect_attr(self, attr_name):
         """
         Collect the best agops from all leaf nodes in a tree.
         """
         best_agops = []
         for t in self.trees:
             leaf_nodes = self._collect_leaf_nodes(t)
-            best_agops += [node['model'].agop_best_model for node in leaf_nodes]
+            best_agops += [getattr(node['model'], attr_name) for node in leaf_nodes]
         return best_agops
+    
+    def collect_best_agops(self):
+        """
+        Collect the best agops from all leaf nodes in a tree.
+        """
+        return self._collect_attr('agop_best_model')
+        # best_agops = []
+        # for t in self.trees:
+        #     leaf_nodes = self._collect_leaf_nodes(t)
+        #     best_agops += [node['model'].agop_best_model for node in leaf_nodes]
+        # return best_agops
+
+    def collect_Ms(self):
+        """
+        Collect the best agops from all leaf nodes in a tree.
+        """
+        return self._collect_attr('M')
     
     def _average_M_across_leaves(self, tree):
         """
@@ -321,8 +344,7 @@ class xRFM:
 
             # Create and fit a TabRFM model on this subset
             model = RFM(**self.rfm_params['model'], tuning_metric=self.tuning_metric, 
-                        categorical_info=self.categorical_info, device=self.device, 
-                        label_centering=self.label_centering)
+                        categorical_info=self.categorical_info, device=self.device)
             
             model.fit((X, y), (X_val, y_val), **self.rfm_params['fit'])
             return {'type': 'leaf', 'model': model, 'train_indices': train_indices, 'is_root': is_root}
@@ -343,7 +365,7 @@ class xRFM:
             print(f"Using {self.split_method} split method")
             M = self._get_agop_on_subset(X, y)
             if self.split_method == 'top_vector_agop_on_subset':
-                # _, eig_vecs = torch.linalg.eigh(M)
+                # Vt = torch.linalg.eigh(M)[1].T
                 _, _, Vt = torch.linalg.svd(M, full_matrices=False) # more stable than eigh and should be identical for top vectors
                 projection = Vt[0]
             elif self.split_method == 'random_agop_on_subset':
@@ -355,6 +377,8 @@ class xRFM:
                 # _, eig_vecs = torch.linalg.eigh(Xb.T @ Xb)
                 _, _, Vt = torch.linalg.svd(Xb.T @ Xb, full_matrices=False) # do computation on Xb.T @ Xb assuming n >> d
                 projection = Vt[0]
+        elif self.split_method == 'fixed_vector':
+            projection = self.fixed_vector
         else:
             projection = self._generate_random_projection(X.shape[1])
         
@@ -563,17 +587,13 @@ class xRFM:
 
         if self.tuning_metric == 'accuracy':
             preds = self.predict_proba(samples.to(self.device)).to(targets.device)
-            if preds.shape[-1]==1:
-                num_classes = len(torch.unique(targets))
-                if num_classes==2:
-                    preds = torch.where(preds > 0.5, 1, 0).reshape(targets.shape)
-                    return accuracy(preds, targets, task="binary").item()
-                else:
-                    return accuracy(preds, targets, task="multiclass", num_classes=num_classes).item()
+            preds_ = torch.argmax(preds,dim=-1)
+            targets_ = torch.argmax(targets,dim=-1)
+            num_classes = preds.shape[-1]
+            if num_classes==2:
+                return accuracy(preds_, targets_, task="binary").item()
             else:
-                preds_ = torch.argmax(preds,dim=-1)
-                targets_ = torch.argmax(targets,dim=-1)
-                return accuracy(preds_, targets_, task="multiclass", num_classes=preds.shape[-1]).item()
+                return accuracy(preds_, targets_, task="multiclass", num_classes=num_classes).item()
         
         elif self.tuning_metric == 'mse':
             preds = self.predict(samples.to(self.device)).to(targets.device)
@@ -581,7 +601,11 @@ class xRFM:
 
         elif self.tuning_metric == 'auc':
             preds = self.predict_proba(samples.to(self.device)).to(targets.device)
-            return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy())
+            num_classes = preds.shape[-1]
+            if num_classes==2:
+                return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy()[:,1])
+            else:
+                return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
         
         else:
             raise ValueError(f"Invalid tuning metric: {self.tuning_metric}")
@@ -605,20 +629,16 @@ class xRFM:
             MSE loss if regression, accuracy if classification
         """
         
-
+        num_classes = len(torch.unique(targets))
         if self.tuning_metric == 'accuracy':
             preds = self._predict_tree(samples.to(self.device), tree, proba=True).to(targets.device)
-            if preds.shape[-1]==1:
-                num_classes = len(torch.unique(targets))
-                if num_classes==2:
-                    preds = torch.where(preds > 0.5, 1, 0).reshape(targets.shape)
-                    return accuracy(preds, targets, task="binary").item()
-                else:
-                    return accuracy(preds, targets, task="multiclass", num_classes=num_classes).item()
+            preds_ = torch.argmax(preds,dim=-1)
+            targets_ = torch.argmax(targets,dim=-1)
+            num_classes = preds.shape[-1]
+            if num_classes==2:
+                return accuracy(preds_, targets_, task="binary").item()
             else:
-                preds_ = torch.argmax(preds,dim=-1)
-                targets_ = torch.argmax(targets,dim=-1)
-                return accuracy(preds_, targets_, task="multiclass", num_classes=preds.shape[-1]).item()
+                return accuracy(preds_, targets_, task="multiclass", num_classes=num_classes).item()
         
         elif self.tuning_metric == 'mse':
             preds = self._predict_tree(samples.to(self.device), tree).to(targets.device)
@@ -626,7 +646,10 @@ class xRFM:
 
         elif self.tuning_metric == 'auc':
             preds = self._predict_tree(samples.to(self.device), tree, proba=True).to(targets.device)
-            return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy())
+            if num_classes <= 2:
+                return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy()[:,1])
+            else:
+                return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy())
         
         else:
             raise ValueError(f"Invalid tuning metric: {self.tuning_metric}")
@@ -815,8 +838,13 @@ class xRFM:
         X_val = X[subset_val_indices]
         y_val = y[subset_val_indices]
 
+        print("Getting AGOP on subset")
+        print("X_train", X_train.shape, "y_train", y_train.shape, "X_val", X_val.shape, "y_val", y_val.shape)
+
         model.fit((X_train, y_train), (X_val, y_val), **self.default_rfm_params['fit'])
         agop = model.agop_best_model
+        print("AGOP on subset", agop.shape)
+        print("M", agop.diag()[:5])
         return agop
 
     def _get_leaf_groups_and_models_on_samples(self, X, tree):

@@ -1,6 +1,13 @@
 import numpy as np
 import torch
+
 from xrfm import xRFM
+
+import sys
+sys.path.insert(0, '/u/dbeaglehole/tabrfm')
+from tabrfm.experimental.rp_rfm import RP_RFM
+
+
 import time
 from sklearn.datasets import fetch_covtype
 from sklearn.model_selection import train_test_split
@@ -23,8 +30,9 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_
 X_val, X_test, y_val, y_test = train_test_split(X_test, y_test, test_size=0.2, random_state=0)
 
 
-max_n_train = 600_000
-max_n_val = 200_000
+max_n_train = 100_000
+max_n_val = 50_000
+min_subset_size = 25_000
 
 X_train = torch.from_numpy(X_train[:max_n_train]).float().cuda()
 y_train = one_hot_encoding(y_train[:max_n_train])
@@ -43,32 +51,70 @@ print(f'y_train.shape: {y_train.shape}')
 print(f'y_val.shape: {y_val.shape}')
 print(f'y_test.shape: {y_test.shape}')
 
-############################ xRFM #############################
 DEVICE = torch.device("cuda")
 bw = 5.
 reg = 1e-3
-iters = 0
-rfm_params = {
+iters = 1
+
+DEVICE = torch.device("cuda")
+xrfm_params = {
     'model': {
-        "kernel": 'l2_high_dim',
-        "bandwidth": bw,
-        "exponent": 1.0,
-        "diag": False,
+        'kernel': "l1",
+        'bandwidth': bw,
+        'exponent': 1.0,
+        'diag': False,
+        'bandwidth_mode': "constant"
     },
     'fit': {
-        "reg": reg,
-        "iters": iters,
-        "M_batch_size": len(X_train),
-        "verbose": True,
+        'reg': reg,
+        'iters': iters,
+        'M_batch_size': len(X_train),
+        'verbose': False,
+        'early_stop_rfm': True,
     }
 }
-model = xRFM(rfm_params, device=DEVICE, min_subset_size=20_000, tuning_metric='accuracy', split_method='top_vector_agop_on_subset')
+default_rfm_params = {
+    'model': {
+        "kernel": 'l2_high_dim',
+        "exponent": 1.0,
+        "bandwidth": 10.0,
+        "diag": False,
+        "bandwidth_mode": "constant"
+    },
+    'fit' : {
+        "get_agop_best_model": True,
+        "return_best_params": False,
+        "reg": 1e-3,
+        "iters": 0,
+        "early_stop_rfm": False,
+        "verbose": False
+    }
+}
+xrfm_model = xRFM(xrfm_params, device=DEVICE, min_subset_size=min_subset_size, tuning_metric='accuracy', 
+                  default_rfm_params=default_rfm_params, 
+                  split_method='top_vector_agop_on_subset')
+
+
 
 start_time = time.time()
-model.fit(X_train, y_train, X_val, y_val)
+xrfm_model.fit(X_train, y_train, X_test, y_test)
 end_time = time.time()
 
-print("Predicting on test set")
-y_pred = model.predict_proba(X_test)
+y_pred = xrfm_model.predict_proba(X_test)
 acc = accuracy(y_pred, y_test)
-print(f'xRFM, top vector AGOP splitting time: {end_time-start_time:g} s, acc: {acc.item():g}')
+print(f'xRFM time: {end_time-start_time:g} s, acc: {acc:g}')
+print('-'*150)
+
+rfm_params = {**xrfm_params['model'], **xrfm_params['fit']}
+rp_rfm_model = RP_RFM(rfm_params, device=DEVICE, min_subset_size=min_subset_size, 
+                      tuning_metric='accuracy', n_tree_iters=0, n_trees=1,
+                      split_method='top_vector_agop_on_subset')
+
+start_time = time.time()
+rp_rfm_model.fit(X_train, y_train, X_test, y_test)
+end_time = time.time()
+
+y_pred = xrfm_model.predict_proba(X_test)
+acc = accuracy(y_pred, y_test)
+print(f'RP-RFM time: {end_time-start_time:g} s, acc: {acc:g}')
+print('-'*150)
