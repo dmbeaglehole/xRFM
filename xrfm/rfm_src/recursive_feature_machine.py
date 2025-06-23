@@ -577,10 +577,16 @@ class RFM(torch.nn.Module):
 
         if 'f1' in metrics:
             preds = self.predict_proba(samples.to(self.device)).to(targets.device)
+            if targets.shape[1] == 1:
+                # assume binary classification
+                targets = torch.cat([1-targets, targets], dim=1)
             out_metrics['f1'] = f1_score(preds, targets, num_classes=preds.shape[-1]).item()
 
         if 'auc' in metrics:
             preds = self.predict_proba(samples.to(self.device))
+            if targets.shape[1] == 1:
+                # assume binary classification
+                targets = torch.cat([1-targets, targets], dim=1)
             out_metrics['auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
 
         if 'top_agop_vector_auc' in metrics:
@@ -639,13 +645,8 @@ class RFM(torch.nn.Module):
     def predict_proba(self, samples, eps=1e-3):
         predictions = self.predict(samples) 
         if predictions.shape[1] == 1:
-            smooth_clamped = SmoothClampedReLU(beta=self.proba_beta)
-            predictions = smooth_clamped(predictions)
-            return torch.cat([1-predictions, predictions], dim=1) # 2 outputs, 1 per class
-        else:
-            # min_preds = predictions.min(dim=1, keepdim=True).values
-            # max_preds = predictions.max(dim=1, keepdim=True).values 
-            # predictions = (predictions - min_preds) / (max_preds - min_preds) # normalize predictions to [0, 1]
-            predictions = torch.clamp(predictions, eps, 1-eps) # clamp predictions to [eps, 1-eps]
-            predictions /= predictions.sum(dim=1, keepdim=True) # normalize predictions to sum to 1
-            return predictions
+            predictions = torch.cat([1-predictions, predictions], dim=1)
+        
+        predictions = torch.clamp(predictions, eps, 1-eps) # clamp predictions to [eps, 1-eps]
+        predictions /= predictions.sum(dim=1, keepdim=True) # normalize predictions to sum to 1
+        return predictions
