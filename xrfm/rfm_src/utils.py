@@ -20,14 +20,7 @@ class SmoothClampedReLU(nn.Module):
         return clamped
 
 def f1_score(preds, targets, num_classes, min_float=1e-8):
-
-    if num_classes == 1:
-        preds = torch.where(preds >= 0.5, 1, 0)
-        targets = torch.where(targets >= 0.5, 1, 0)
-    else:
-        preds = torch.argmax(preds, dim=-1)
-        targets = torch.argmax(targets, dim=-1)
-    
+ 
     # Calculate F1 score components
     if num_classes == 2:
         # get F1 on positive class
