@@ -20,9 +20,12 @@ class SmoothClampedReLU(nn.Module):
         return clamped
 
 def f1_score(preds, targets, num_classes, min_float=1e-8):
- 
+    
     # Calculate F1 score components
     if num_classes == 2:
+        preds = (preds >= 0.5).int()
+        targets = targets.int()
+        
         # get F1 on positive class
         tp = ((preds[:,1] == 1) & (targets[:,1] == 1)).sum().float()
         fp = ((preds[:,1] == 1) & (targets[:,1] == 0)).sum().float()
