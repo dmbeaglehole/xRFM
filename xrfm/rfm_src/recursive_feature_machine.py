@@ -489,6 +489,9 @@ class RFM(torch.nn.Module):
 
         self.best_iter = best_iter
 
+        if self.verbose:
+            print(f"{self.best_iter=}")
+
         if kwargs.get('get_agop_best_model', False):
             # fit AGOP of best model
             self.agop_best_model = self.fit_M(X_train, y_train, inplace=False, **kwargs)
@@ -578,12 +581,7 @@ class RFM(torch.nn.Module):
 
         if 'auc' in metrics:
             preds = self.predict_proba(samples.to(self.device))
-            num_classes = preds.shape[-1]
-            
-            if num_classes==2:
-                out_metrics['auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy()[:,1])
-            else:
-                out_metrics['auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
+            out_metrics['auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
 
         if 'top_agop_vector_auc' in metrics:
             assert len(targets.shape)==1 or targets.shape[1]==1, "Top AGOP Vector AUC is only defined for binary classification"
