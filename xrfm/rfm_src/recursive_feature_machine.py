@@ -322,11 +322,78 @@ class RFM(torch.nn.Module):
         self.ep_epochs = ep_epochs
         return
     
-    @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True") # to prevent OOM issue due to memory fragmentation
+    def _initialize_fit_parameters(self, iters, method, reg, verbose, M_batch_size, total_points_to_sample, 
+                                   ep_epochs, tuning_metric, early_stop_rfm, early_stop_multiplier, 
+                                   center_grads, prefit_eigenpro, **kwargs):
+        """Initialize parameters for the fit method."""
+        self.verbose = verbose if verbose is not None else self.verbose
+        self.fit_using_eigenpro = (method.lower()=='eigenpro')
+        self.prefit_eigenpro = prefit_eigenpro
+        self.reg = reg if reg is not None else self.reg
+        self.M_batch_size = M_batch_size
+        self.total_points_to_sample = total_points_to_sample
+        self.iters = iters if iters is not None else self.iters
+        self.ep_epochs = ep_epochs
+        self.tuning_metric = tuning_metric if tuning_metric is not None else self.tuning_metric
+        self.minimize = self.tuning_metric in ['mse']
+        self.early_stop_rfm = early_stop_rfm
+        self.early_stop_multiplier = early_stop_multiplier
+        self.center_grads = center_grads
+        self.top_k = kwargs.get('top_k', None)
+        assert 'diag' not in kwargs, "diag should be set in the constructor"
+
+    def _compute_validation_metrics(self, X_train, y_train, X_val, y_val, iteration_num=None, is_final=False, **kwargs):
+        """Compute validation metrics based on tuning_metric."""
+        if self.tuning_metric == 'accuracy':
+            val_metrics = self.score(X_val, y_val, metrics=['accuracy'])
+            if self.verbose:
+                prefix = "Final" if is_final else f"Round {iteration_num}"
+                print(f"{prefix} Val Acc: {100*val_metrics['accuracy']:.2f}%")
+        elif self.tuning_metric == 'auc':
+            val_metrics = self.score(X_val, y_val, metrics=['auc'])
+            if self.verbose:
+                prefix = "Final" if is_final else f"Round {iteration_num}"
+                print(f"{prefix} Val AUC: {val_metrics['auc']:.4f}")
+        elif self.tuning_metric == 'top_agop_vector_auc':
+            self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
+            val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_auc'])
+            if self.verbose:
+                prefix = "Final" if is_final else f"Round {iteration_num}"
+                print(f"{prefix} Val Top AGOP Vector AUC: {val_metrics['top_agop_vector_auc']:.4f}")
+        elif self.tuning_metric == 'top_agop_vector_pearson_r':
+            self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
+            val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_pearson_r'])
+            if self.verbose:
+                prefix = "Final" if is_final else f"Round {iteration_num}"
+                print(f"{prefix} Val Top AGOP Vector Pearson R: {val_metrics['top_agop_vector_pearson_r']:.4f}")
+        elif self.tuning_metric == 'top_agop_vectors_ols_auc':
+            self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
+            val_metrics = self.score(X_val, y_val, metrics=['top_agop_vectors_ols_auc'])
+            if self.verbose:
+                prefix = "Final" if is_final else f"Round {iteration_num}"
+                print(f"{prefix} Val Top AGOP Vectors OLS AUC: {val_metrics['top_agop_vectors_ols_auc']:.4f}")
+        else:
+            val_metrics = self.score(X_val, y_val, metrics=['mse'])
+            if self.verbose:
+                prefix = "Final" if is_final else f"Round {iteration_num}"
+                print(f"{prefix} Val MSE: {val_metrics['mse']:.4f}")
+        
+        return val_metrics
+
+    def _should_early_stop(self, current_metric, best_metric):
+        """Check if early stopping criteria is met."""
+        if self.minimize:
+            return current_metric > best_metric * self.early_stop_multiplier
+        else:
+            return current_metric < best_metric / self.early_stop_multiplier
+
+    # TODO: to prevent OOM issue due to memory fragmentation but doesn't actually set the environment variable!
+    @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True") 
     def fit(self, train_data, val_data=None, iters=None, method='lstsq', reg=None, center_grads=False,
             verbose=False, M_batch_size=None, ep_epochs=None, return_best_params=True, bs=None, 
             return_Ms=False, lr_scale=1, total_points_to_sample=None, solver='solve', 
-            tuning_metric=None, prefit_eigenpro=True, early_stop_rfm=True, early_stop_multiplier=1.1, **kwargs):
+            tuning_metric=None, prefit_eigenpro=True, early_stop_rfm=True, early_stop_multiplier=1.1, 
+            callback=None, **kwargs):
         """
         :param train_data: tuple of (X, y)
         :param val_data: tuple of (X, y)
@@ -344,24 +411,15 @@ class RFM(torch.nn.Module):
         :param prefit_eigenpro: if True, prefit EigenPro with a subset of <= max_lstsq_size samples
         """
 
-        self.verbose = verbose if verbose is not None else self.verbose
-        self.fit_using_eigenpro = (method.lower()=='eigenpro')
-        self.prefit_eigenpro = prefit_eigenpro
-        self.reg = reg if reg is not None else self.reg
-        self.M_batch_size = M_batch_size
-        self.total_points_to_sample = total_points_to_sample
-        self.iters = iters if iters is not None else self.iters
-        self.ep_epochs = ep_epochs
-        self.tuning_metric = tuning_metric if tuning_metric is not None else self.tuning_metric
-        self.minimize = self.tuning_metric in ['mse']
-        self.early_stop_rfm = early_stop_rfm
-        self.early_stop_multiplier = early_stop_multiplier
-        self.center_grads = center_grads
-        self.top_k = kwargs.get('top_k', None)
-        assert 'diag' not in kwargs, "diag should be set in the constructor"
+        # Initialize parameters
+        self._initialize_fit_parameters(iters, method, reg, verbose, M_batch_size, total_points_to_sample,
+                                       ep_epochs, tuning_metric, early_stop_rfm, early_stop_multiplier,
+                                       center_grads, prefit_eigenpro, **kwargs)
+        
+        
 
+        # Validate and prepare data
         X_train, y_train, X_val, y_val = self.validate_data(train_data, val_data)
-
         n, d = X_train.shape
         print("="*70)
         print(f"Fitting RFM with ntrain: {n}, d: {d}, and nval: {X_val.shape[0]}")
@@ -369,71 +427,45 @@ class RFM(torch.nn.Module):
 
         self.adapt_params_to_data(n, d)
         
+        # Initialize tracking variables
         metrics, Ms = [], []
         best_alphas, best_M, best_sqrtM = None, None, None
         best_metric = float('inf') if self.tuning_metric == 'mse' else 0
         best_iter = None
         early_stopped = False
         best_bandwidth = self.kernel_obj.bandwidth+0
+
+        # Main training loop
         for i in range(self.iters):
+            if callback is not None:
+                callback(iteration=i)
+
             start = time.time()
             self.fit_predictor(X_train, y_train, X_val=X_val, y_val=y_val, 
                                bs=bs, lr_scale=lr_scale, solver=solver, 
                                **kwargs)
                         
-            if self.tuning_metric == 'accuracy':
-                val_metrics = self.score(X_val, y_val, metrics=['accuracy'])
-                val_acc = val_metrics['accuracy']
-                if self.verbose:
-                    print(f"Round {i}, Val Acc: {100*val_acc:.2f}%")
-            elif self.tuning_metric == 'auc':
-                val_metrics = self.score(X_val, y_val, metrics=['auc'])
-                val_auc = val_metrics['auc']
-                if self.verbose:
-                    print(f"Round {i}, Val AUC: {val_auc:.4f}")
-            elif self.tuning_metric == 'top_agop_vector_auc':
-                self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
-                val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_auc'])
-                val_top_agop_vector_auc = val_metrics['top_agop_vector_auc']
-                if self.verbose:
-                    print(f"Round {i}, Val Top AGOP Vector AUC: {val_top_agop_vector_auc:.4f}")
-            elif self.tuning_metric == 'top_agop_vector_pearson_r':
-                self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
-                val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_pearson_r'])
-                val_top_agop_vector_pearson_r = val_metrics['top_agop_vector_pearson_r']
-                if self.verbose:
-                    print(f"Round {i}, Val Top AGOP Vector Pearson R: {val_top_agop_vector_pearson_r:.4f}")
-            elif self.tuning_metric == 'top_agop_vectors_ols_auc':
-                self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
-                val_metrics = self.score(X_val, y_val, metrics=['top_agop_vectors_ols_auc'])
-                val_top_agop_vectors_ols_auc = val_metrics['top_agop_vectors_ols_auc']
-                if self.verbose:
-                    print(f"Round {i}, Val Top AGOP Vectors OLS AUC: {val_top_agop_vectors_ols_auc:.4f}")
-            else:
-                val_metrics = self.score(X_val, y_val, metrics=['mse'])
-                val_mse = val_metrics['mse']
-                if self.verbose:
-                    print(f"Round {i}, Val MSE: {val_mse:.4f}")
+            # Compute validation metrics
+            val_metrics = self._compute_validation_metrics(X_train, y_train, X_val, y_val, iteration_num=i, **kwargs)
 
+            # Update best parameters if needed
             if return_best_params:
-                best_metric, best_alphas, best_M, best_sqrtM, best_iter, best_bandwidth = self.update_best_params(best_metric, best_alphas, 
-                                                                                                                best_M, best_sqrtM, 
-                                                                                                                best_iter, best_bandwidth, 
-                                                                                                                val_metrics[self.tuning_metric], i)
+                best_metric, best_alphas, best_M, best_sqrtM, best_iter, best_bandwidth = self.update_best_params(
+                    best_metric, best_alphas, best_M, best_sqrtM, best_iter, best_bandwidth, 
+                    val_metrics[self.tuning_metric], i)
              
+            # Check for early stopping
             if self.early_stop_rfm:
                 val_metric = val_metrics[self.tuning_metric]
-                if (self.minimize and val_metric > best_metric * self.early_stop_multiplier) or\
-                    (not self.minimize and val_metric < best_metric / self.early_stop_multiplier):
+                if self._should_early_stop(val_metric, best_metric):
                     print(f"Early stopping at iteration {i}")
                     if not return_best_params:
-                        self.fit_M(X_train, y_train.shape[-1], **kwargs) # need to fit last M from final fit, to match default behavior
-
+                        self.fit_M(X_train, y_train.shape[-1], **kwargs)
                     early_stopped = True
                     break
 
+            # Fit M matrix and cleanup
             self.fit_M(X_train, y_train.shape[-1], **kwargs)
-
             del self.weights
             
             if return_Ms:
@@ -442,45 +474,20 @@ class RFM(torch.nn.Module):
 
             print(f"Time taken for round {i}: {time.time() - start} seconds")
 
-        if not early_stopped: # handle final iteration if early stopping didn't occur
+        if callback is not None:
+            callback(iteration=self.iters)
+
+        # Handle final iteration if no early stopping occurred
+        if not early_stopped:
             self.fit_predictor(X_train, y_train, X_val=X_val, y_val=y_val, bs=bs, **kwargs)        
-            if self.tuning_metric == 'accuracy':
-                final_val_metrics = self.score(X_val, y_val, metrics=['accuracy'])
-                final_val_acc = final_val_metrics['accuracy']
-                if self.verbose:
-                    print(f"Final Val Acc: {100*final_val_acc:.2f}%")
-            elif self.tuning_metric == 'auc':
-                final_val_metrics = self.score(X_val, y_val, metrics=['auc'])
-                final_val_auc = final_val_metrics['auc']
-                if self.verbose:
-                    print(f"Final Val AUC: {final_val_auc:.4f}")
-            elif self.tuning_metric == 'top_agop_vector_auc':
-                final_val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_auc'])
-                final_val_top_agop_vector_auc = final_val_metrics['top_agop_vector_auc']
-                if self.verbose:
-                    print(f"Final Val Top AGOP Vector AUC: {final_val_top_agop_vector_auc:.4f}")
-            elif self.tuning_metric == 'top_agop_vector_pearson_r':
-                final_val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_pearson_r'])
-                final_val_top_agop_vector_pearson_r = final_val_metrics['top_agop_vector_pearson_r']
-                if self.verbose:
-                    print(f"Final Val Top AGOP Vector Pearson R: {final_val_top_agop_vector_pearson_r:.4f}")
-            elif self.tuning_metric == 'top_agop_vectors_ols_auc':
-                final_val_metrics = self.score(X_val, y_val, metrics=['top_agop_vectors_ols_auc'])
-                final_val_top_agop_vectors_ols_auc = final_val_metrics['top_agop_vectors_ols_auc']
-                if self.verbose:
-                    print(f"Final Val Top AGOP Vectors OLS AUC: {final_val_top_agop_vectors_ols_auc:.4f}")
-            else:
-                final_val_metrics = self.score(X_val, y_val, metrics=['mse'])
-                final_val_mse = final_val_metrics['mse']
-                if self.verbose:
-                    print(f"Final Val MSE: {final_val_mse:.4f}")
+            final_val_metrics = self._compute_validation_metrics(X_train, y_train, X_val, y_val, is_final=True, **kwargs)
 
             if return_best_params:
-                best_metric, best_alphas, best_M, best_sqrtM, best_iter, best_bandwidth = self.update_best_params(best_metric, best_alphas, best_M, 
-                                                                                                                    best_sqrtM, best_iter, best_bandwidth, 
-                                                                                                                    final_val_metrics[self.tuning_metric], 
-                                                                                                                    iters)
+                best_metric, best_alphas, best_M, best_sqrtM, best_iter, best_bandwidth = self.update_best_params(
+                    best_metric, best_alphas, best_M, best_sqrtM, best_iter, best_bandwidth, 
+                    final_val_metrics[self.tuning_metric], iters)
                 
+        # Restore best parameters
         if return_best_params:
             self.M = None if best_M is None else best_M.to(self.device)
             self.sqrtM = None if best_sqrtM is None else best_sqrtM.to(self.device)

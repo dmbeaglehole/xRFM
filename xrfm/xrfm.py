@@ -16,16 +16,13 @@ class xRFM:
     
     Parameters
     ----------
-    min_subset_size : int, default=60000
-        The minimum size of a subset to further split. If a subset has fewer 
-        samples than this, a base RFM model is fit on it directly.
-    
     rfm_params : dict, default=None
         Parameters to pass to the RFM model at each leaf node.
         If None, default parameters are used.
     
-    random_state : int, default=None
-        Controls the random state for generating random projections.
+    min_subset_size : int, default=60000
+        The minimum size of a subset to further split. If a subset has fewer 
+        samples than this, a base RFM model is fit on it directly.
     
     max_depth : int, default=None
         Maximum depth of the recursive splitting tree. If None, splitting continues
@@ -37,10 +34,10 @@ class xRFM:
     n_trees : int, default=1
         Number of trees to build. Predictions will be averaged across all trees.
         
-    n_tree_iters : int, default=1
+    n_tree_iters : int, default=0
         Number of iterations to build each tree. Later iterations use the average
         of model.M from all leaf nodes to generate better projection directions.
-        If n_tree_iters=1, the original random projection method is used.
+        If n_tree_iters=0, the original random projection method is used.
 
     split_method : str, default='top_vector_agop_on_subset'
         Method to use for splitting the data.
@@ -48,6 +45,8 @@ class xRFM:
         'random_agop_on_subset' : use a random eigenvector of the AGOP on the subset
         'top_pc_agop_on_subset' : use the top principal component of the AGOP on the subset
         'random_pca' : use a random principal component of the data
+        'linear' : use linear regression coefficients as projection direction
+        'fixed_vector' : use a fixed vector for projection (requires fixed_vector parameter)
 
     tuning_metric : str, default='mse'
         Metric to use for tuning the model.
@@ -62,6 +61,19 @@ class xRFM:
         'categorical_indices' : list of indices of the categorical features
         'categorical_vectors' : list of vectors of the categorical features
     
+    default_rfm_params : dict, default=None
+        Default parameters for the RFM model used for generating split directions
+        when using AGOP-based split methods. If None, uses built-in default parameters
+        with kernel='l2', exponent=1.0, bandwidth=10.0, etc.
+    
+    fixed_vector : torch.Tensor, default=None
+        Fixed projection vector to use when split_method='fixed_vector'.
+        Must be provided if using 'fixed_vector' split method.
+    
+    callback : function, default=None
+        Callback function to call after each iteration of each Leaf RFM.
+        The function must accept an 'iteration' argument.
+    
     Notes
     -----
     The model follows sklearn's estimator interface with fit, predict, and score methods.
@@ -71,7 +83,7 @@ class xRFM:
                  max_depth=None, device=None, n_trees=1, n_tree_iters=0, 
                  split_method='top_vector_agop_on_subset', tuning_metric='mse', 
                  categorical_info=None, default_rfm_params=None,
-                 fixed_vector=None):
+                 fixed_vector=None, callback=None):
         self.min_subset_size = min_subset_size
         self.rfm_params = rfm_params
         self.max_depth = max_depth
@@ -83,9 +95,10 @@ class xRFM:
         self.n_tree_iters = n_tree_iters
         self.tuning_metric = tuning_metric
         self.split_method = split_method
-        self.maximizing_metric = tuning_metric in ['accuracy', 'auc']
+        self.maximizing_metric = tuning_metric in ['accuracy', 'auc', 'f1']
         self.categorical_info = categorical_info
         self.fixed_vector = fixed_vector
+        self.callback = callback
         
         # parameters for refilling the validation set at leaves
         self.min_val_size = 1500
@@ -346,7 +359,7 @@ class xRFM:
             model = RFM(**self.rfm_params['model'], tuning_metric=self.tuning_metric, 
                         categorical_info=self.categorical_info, device=self.device)
             
-            model.fit((X, y), (X_val, y_val), **self.rfm_params['fit'])
+            model.fit((X, y), (X_val, y_val), **self.rfm_params['fit'], callback=self.callback)
             return {'type': 'leaf', 'model': model, 'train_indices': train_indices, 'is_root': is_root}
         
         # Generate projection vector
