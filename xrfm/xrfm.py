@@ -149,14 +149,40 @@ class xRFM:
     
     
     def _generate_random_projection(self, dim):
-        """Generate a random unit vector for projection."""
+        """
+        Generate a random unit vector for data projection.
+        
+        Parameters
+        ----------
+        dim : int
+            Dimension of the projection vector
+            
+        Returns
+        -------
+        torch.Tensor
+            Random unit vector of shape (dim,)
+        """
         projection = torch.randn(dim, device=self.device)
         return projection / torch.norm(projection)
     
     def _generate_projection_from_M(self, dim, M):
         """
         Generate a projection vector using the covariance matrix M.
-        This samples from a multivariate normal distribution with covariance M.
+        
+        This method samples from a multivariate normal distribution with 
+        covariance M (typically the AGOP matrix).
+        
+        Parameters
+        ----------
+        dim : int
+            Dimension of the projection vector
+        M : torch.Tensor
+            Covariance matrix, either diagonal (1D) or full matrix (2D)
+            
+        Returns
+        -------
+        torch.Tensor
+            Projection vector of shape (dim,), normalized to unit length
         """
         if M.dim() == 1:  # If M is diagonal
             std_devs = torch.sqrt(M)
@@ -203,7 +229,17 @@ class xRFM:
     
     def _collect_attr(self, attr_name):
         """
-        Collect the best agops from all leaf nodes in a tree.
+        Collect a specific attribute from all leaf nodes in all trees.
+        
+        Parameters
+        ----------
+        attr_name : str
+            Name of the attribute to collect from each leaf model
+            
+        Returns
+        -------
+        list
+            List of attribute values from all leaf models across all trees
         """
         best_agops = []
         for t in self.trees:
@@ -213,7 +249,12 @@ class xRFM:
     
     def collect_best_agops(self):
         """
-        Collect the best agops from all leaf nodes in a tree.
+        Collect the best AGOP matrices from all leaf nodes across all trees.
+        
+        Returns
+        -------
+        list
+            List of AGOP matrices from all leaf models
         """
         return self._collect_attr('agop_best_model')
         # best_agops = []
@@ -224,13 +265,22 @@ class xRFM:
 
     def collect_Ms(self):
         """
-        Collect the best agops from all leaf nodes in a tree.
+        Collect the Mahalanobis matrices (M) from all leaf nodes across all trees.
+        
+        Returns
+        -------
+        list
+            List of M matrices from all leaf models
         """
         return self._collect_attr('M')
     
     def _average_M_across_leaves(self, tree):
         """
         Average the M parameter across all leaf nodes in a tree.
+        
+        This method collects the Mahalanobis matrices from all leaf nodes
+        and computes their average. This averaged matrix is used to generate
+        better projection directions in subsequent iterations.
         
         Parameters
         ----------
@@ -240,7 +290,7 @@ class xRFM:
         Returns
         -------
         torch.Tensor
-            Averaged M parameter
+            Averaged M parameter, either diagonal (1D) or full matrix (2D)
         """
         leaf_nodes = self._collect_leaf_nodes(tree)
         leaf_models = [node['model'] for node in leaf_nodes]
@@ -438,7 +488,30 @@ class xRFM:
     
     def _refill_val_set(self, X, y, X_val, y_val, train_indices):
         """
-        Refill the validation set with the training set.
+        Refill the validation set with samples from the training set.
+        
+        This method ensures that each leaf node has a sufficient validation set
+        for proper model tuning. When the validation set becomes too small after
+        tree splitting, it transfers samples from the training set to the 
+        validation set.
+        
+        Parameters
+        ----------
+        X : torch.Tensor
+            Training features
+        y : torch.Tensor
+            Training targets
+        X_val : torch.Tensor
+            Validation features
+        y_val : torch.Tensor
+            Validation targets
+        train_indices : torch.Tensor
+            Indices of training samples in the original dataset
+            
+        Returns
+        -------
+        tuple
+            Updated (X, y, X_val, y_val, train_indices) with refilled validation set
         """
 
         if len(X_val) <= self.min_val_size:
@@ -773,6 +846,20 @@ class xRFM:
         return reorder_tensor(torch.cat(predictions, dim=0), order)
     
     def load_state_dict(self, state_dict, X_train):
+        """
+        Load model state from a state dictionary.
+        
+        This method reconstructs the model from saved parameters, including
+        the tree structure and leaf model parameters. The training data is
+        needed to set the centers for each leaf model.
+        
+        Parameters
+        ----------
+        state_dict : dict
+            Dictionary containing model parameters from get_state_dict()
+        X_train : torch.Tensor
+            Training data used to set leaf model centers
+        """
         self.rfm_params = state_dict['rfm_params']
         self.categorical_info = state_dict['categorical_info']
 
@@ -790,8 +877,16 @@ class xRFM:
     
     def _build_leaf_models_from_param_trees(self, param_trees):
         """
-        Build the leaf models by modifying the param trees in place. 
-        This is done by traversing the tree to the leaves, then setting the leaf_model attributes.
+        Build leaf models from parameter trees during model loading.
+        
+        This method reconstructs the tree structure and instantiates RFM models
+        at each leaf node using the saved parameters. It traverses the tree 
+        structure and sets the model attributes at leaf nodes.
+        
+        Parameters
+        ----------
+        param_trees : list
+            List of parameter trees from the state dictionary
         """
         self.trees = []
 
@@ -818,10 +913,19 @@ class xRFM:
     
     def get_state_dict(self):
         """
-        Get the state dict of the model. State dict contains the parameters of the model in a tree format.
-        This can be used to save the model and load it later. The parameters are stored in a tree format
-        as each leaf model will have a different set of weights, M/sqrtM matrices, and bandwidths in the case
-        of adaptive bandwidths.
+        Get the state dictionary containing all model parameters for serialization.
+        
+        The state dictionary contains the tree structure and all parameters needed
+        to reconstruct the model, including individual weights, M/sqrtM matrices,
+        and bandwidths for each leaf model. This enables model saving and loading.
+        
+        Returns
+        -------
+        dict
+            State dictionary with keys:
+            - 'rfm_params': RFM model parameters
+            - 'categorical_info': Categorical feature information
+            - 'param_trees': List of parameter trees containing leaf model parameters
         """
         param_trees = []
         for tree in self.trees:
@@ -835,7 +939,23 @@ class xRFM:
 
     def _get_agop_on_subset(self, X, y, subset_size=50_000):
         """
-        Get the AGOP on subset for a given dataset.
+        
+        This method fits a base RFM model on a subset of the data to compute the AGOP matrix,
+        whose eigenvectors are used to generate projection direction for data splitting.
+        
+        Parameters
+        ----------
+        X : torch.Tensor
+            Input features of shape (n_samples, n_features)
+        y : torch.Tensor
+            Target values of shape (n_samples, n_targets)
+        subset_size : int, default=50000
+            Maximum size of the subset to use for AGOP computation
+            
+        Returns
+        -------
+        torch.Tensor
+            AGOP matrix of shape (n_features, n_features)
         """
         model = RFM(**self.default_rfm_params['model'], device=self.device)
 
@@ -862,21 +982,29 @@ class xRFM:
 
     def _get_leaf_groups_and_models_on_samples(self, X, tree):
         """
-        Get leaf groups and models for a given tree.
-        Parameters:
-        -----------
-        X : numpy.ndarray
-            The data matrix with samples as rows.
+        Assign samples to leaf nodes and return grouped data with corresponding models.
+        
+        This method traverses the tree to determine which leaf node each sample
+        belongs to, then groups the samples by leaf and returns the corresponding
+        models for making predictions.
+        
+        Parameters
+        ----------
+        X : torch.Tensor
+            Input data matrix of shape (n_samples, n_features)
         tree : dict
-            The decision tree with projections and split points.
-        Returns:
-        --------
-        X_leaf_groups : list of numpy.ndarray
-            List of data matrices, one for each leaf node.
-        X_leaf_group_indices : list of numpy.ndarray
-            List of arrays containing the original indices of samples in each leaf group.
-        leaf_models : list
-            List of models stored at the leaf nodes.
+            Tree structure with split directions and leaf models
+            
+        Returns
+        -------
+        X_leaf_groups : list of torch.Tensor
+            List of data tensors, one for each leaf node containing the samples
+            that belong to that leaf
+        X_leaf_group_indices : list of torch.Tensor
+            List of tensors containing the original indices of samples in each 
+            leaf group, used for reordering predictions
+        leaf_nodes : list of dict
+            List of leaf node dictionaries containing the trained models
         """
         # Initialize results lists
         X_leaf_groups = []

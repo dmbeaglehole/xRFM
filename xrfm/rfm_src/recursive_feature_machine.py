@@ -12,26 +12,172 @@ from typing import Union
 
 class RFM(torch.nn.Module):
     """
-    Main object for RFMs with sklearn style interface. Subclasses must implement the kernel and update_M methods. 
-    The subclasses may be either specific kernels (Laplace, Gaussian, GeneralizedLaplace, etc.), in which case the kernel method is automatically derived,
-    or generic kernels (GenericKernel), in which case a Kernel object must be provided. I.e. one can either define:
-    ```python
-        from rfm import RFM
-        model = RFM(kernel=LaplaceKernel(bandwidth=1, exponent=1.2), device='cpu', reg=1e-3, iters=3, bandwidth_mode='constant')
-    ```
+    Recursive Feature Machine (RFM) - A kernel-based learning algorithm with iterative feature transformation.
+
+    Parameters
+    ----------
+    kernel : Union[Kernel, str]
+        Kernel function specification. Can be a Kernel object or string identifier.
+    iters : int, default=5
+        Number of RFM iterations for feature learning
+    bandwidth : float, default=10.0
+        Kernel bandwidth parameter (used with string kernel specification)
+    exponent : float, default=1.0
+        Kernel exponent parameter (used with string kernel specification)
+    bandwidth_mode : str, default='constant'
+        Bandwidth adaptation: 'constant' or 'adaptive'
+    agop_power : float, default=0.5
+        Power for matrix square root in AGOP computation
+    device : str or torch.device, optional
+        Computation device. Auto-selects if None.
+    diag : bool, default=False
+        Whether to use diagonal Mahalanobis matrix
+    verbose : bool, default=True
+        Whether to print progress information
+    mem_gb : float, optional
+        Memory limit in GB for computation
+    tuning_metric : str, default='mse'
+        Metric for model selection and early stopping
+    categorical_info : dict, optional
+        Configuration for categorical features
+    fast_categorical : bool, default=True
+        Whether to use optimized categorical handling
+    
+    Attributes
+    ----------
+    kernel_obj : Kernel
+        The kernel object used for computations
+    M : torch.Tensor
+        Learned Mahalanobis matrix for feature transformation
+    sqrtM : torch.Tensor
+        Square root of Mahalanobis matrix (if used)
+    centers : torch.Tensor
+        Training centers (support vectors)
+    weights : torch.Tensor
+        Kernel regression coefficients
+    best_iter : int
+        Iteration achieving best validation performance
+    
+    Examples
+    --------
+    >>> from xrfm.rfm_src import RFM
+    >>> import torch
+    >>> 
+    >>> # Basic usage
+    >>> model = RFM(kernel='laplace', bandwidth=1.0, iters=3)
+    >>> X_train, y_train = torch.randn(100, 10), torch.randn(100, 1)
+    >>> X_val, y_val = torch.randn(20, 10), torch.randn(20, 1)
+    >>> model.fit((X_train, y_train), (X_val, y_val))
+    >>> predictions = model.predict(X_val)
+    >>> 
+    >>> # Classification example
+    >>> model = RFM(kernel='laplace', tuning_metric='accuracy')
+    >>> y_class = torch.randint(0, 2, (100, 1)).float()
+    >>> model.fit((X_train, y_class), (X_val, y_val))
+    >>> probabilities = model.predict_proba(X_val)
     """
 
     def __init__(self, kernel: Union[Kernel, str], iters=5, bandwidth=10., exponent=1., bandwidth_mode='constant', 
                  agop_power=0.5, device=None, diag=False, verbose=True, mem_gb=None, tuning_metric='mse', 
                  categorical_info=None, fast_categorical=True):
         """
-        :param device: device to run the model on
-        :param diag: if True, Mahalanobis matrix M will be diagonal
-        :param bandwidth_mode: 'constant' or 'adaptive'
-        :param mem_gb: memory in GB for AGOP/EigenPro
-        :param numerical_indices: torch.Tensor(n_num,)
-        :param categorical_indices: List of torch.Tensor(d_cat_i,) for each categorical feature
-        :param categorical_vectors: List of torch.Tensor(d_cat_i, d_cat_i) for each categorical feature. Each row is the encoding for that index.
+        Parameters
+        ----------
+        kernel : Union[Kernel, str]
+            Kernel function to use. Can be either:
+            - A Kernel object (LaplaceKernel, ProductLaplaceKernel, etc.)
+            - A string: 'laplace'/'l2', 'l2_high_dim'/'l2_light', 'product_laplace'/'l1', 'sum_power_laplace'/'l1_power'
+            
+        iters : int, default=5
+            Number of iterations for the RFM algorithm. Each iteration refines the
+            Mahalanobis matrix M through AGOP computation.
+            
+        bandwidth : float, default=10.0
+            Kernel bandwidth parameter. Used when kernel is specified as string.
+            Controls the width of the kernel function.
+            
+        exponent : float, default=1.0
+            Kernel exponent parameter. Used when kernel is specified as string.
+            Controls the shape of the kernel function.
+            
+        bandwidth_mode : str, default='constant'
+            Bandwidth adaptation mode. Options:
+            - 'constant': Fixed bandwidth throughout training
+            - 'adaptive': Bandwidth adapts during training
+            
+        agop_power : float, default=0.5
+            Power for the matrix square root in AGOP computation.
+            Controls the strength of the feature transformation.
+            
+        device : str or torch.device, optional
+            Device for computation ('cpu', 'cuda', or torch.device object).
+            If None, automatically selects GPU if available, otherwise CPU.
+            
+        diag : bool, default=False
+            Whether to use diagonal Mahalanobis matrix M. If True, only diagonal
+            elements are learned, reducing computational complexity.
+            
+        verbose : bool, default=True
+            Whether to print training progress and diagnostic information.
+            
+        mem_gb : float, optional
+            Memory limit in GB for AGOP/EigenPro computation. If None, automatically
+            determined based on available GPU memory (with 1GB safety margin).
+            
+        tuning_metric : str, default='mse'
+            Metric for model selection and early stopping. Options:
+            - 'mse': Mean squared error (for regression)
+            - 'accuracy': Classification accuracy
+            - 'auc': Area under ROC curve
+            - 'f1': F1 score
+            - 'top_agop_vector_auc': AUC using top AGOP eigenvector
+            - 'top_agop_vector_pearson_r': Pearson correlation with top AGOP eigenvector
+            - 'top_agop_vectors_ols_auc': AUC using OLS on top AGOP eigenvectors
+            
+        categorical_info : dict, optional
+            Information for handling categorical features. Should contain:
+            - 'numerical_indices': Indices of numerical features
+            - 'categorical_indices': List of indices for each categorical feature
+            - 'categorical_vectors': Encoding vectors for categorical features
+            
+        fast_categorical : bool, default=True
+            Whether to use optimized categorical feature handling.
+            Only applies to ProductLaplaceKernel.
+        
+        Attributes
+        ----------
+        kernel_obj : Kernel
+            The kernel object used for computations
+        M : torch.Tensor
+            Mahalanobis matrix for feature space transformation
+        sqrtM : torch.Tensor
+            Square root of Mahalanobis matrix (if used by kernel)
+        centers : torch.Tensor
+            Training centers (support vectors) for kernel regression
+        weights : torch.Tensor
+            Alpha coefficients for kernel regression
+        best_iter : int
+            Iteration number that achieved the best validation performance
+        
+        Examples
+        --------
+        >>> from xrfm.rfm_src import RFM
+        >>> from xrfm.rfm_src.kernels import LaplaceKernel
+        >>> 
+        >>> # Using string kernel specification
+        >>> model = RFM(kernel='laplace', bandwidth=1.0, iters=3)
+        >>> 
+        >>> # Using explicit kernel object
+        >>> kernel = LaplaceKernel(bandwidth=1.0, exponent=1.2)
+        >>> model = RFM(kernel=kernel, device='cuda', tuning_metric='accuracy')
+        >>> 
+        >>> # For categorical data
+        >>> categorical_info = {
+        ...     'numerical_indices': torch.tensor([0, 1, 2]),
+        ...     'categorical_indices': [torch.tensor([3, 4])],
+        ...     'categorical_vectors': [torch.eye(2)]
+        ... }
+        >>> model = RFM(kernel='product_laplace', categorical_info=categorical_info)
         """
         super().__init__()
         if isinstance(kernel, str):
@@ -66,9 +212,55 @@ class RFM(torch.nn.Module):
             self.mem_gb = 8
         
     def kernel(self, x, z):
+        """
+        Compute kernel matrix between two sets of points.
+        
+        This method delegates to the kernel object's get_kernel_matrix method,
+        applying the learned Mahalanobis matrix transformation.
+        
+        Parameters
+        ----------
+        x : torch.Tensor
+            First set of points of shape (n_x, d)
+        z : torch.Tensor
+            Second set of points of shape (n_z, d)
+            
+        Returns
+        -------
+        torch.Tensor
+            Kernel matrix of shape (n_x, n_z) where entry (i,j) is k(x[i], z[j])
+        """
         return self.kernel_obj.get_kernel_matrix(x, z, self.sqrtM if self.use_sqrtM else self.M)
 
     def kernel_from_str(self, kernel_str, bandwidth, exponent):
+        """
+        Create kernel object from string specification.
+        
+        Parameters
+        ----------
+        kernel_str : str
+            Kernel type specification. Supported options:
+            - 'laplace', 'l2': Standard Laplace kernel
+            - 'l2_high_dim', 'l2_light': Lightweight Laplace kernel for high dimensions
+            - 'product_laplace', 'l1': Product Laplace kernel for categorical features
+            - 'sum_power_laplace', 'l1_power': Sum of power Laplace kernel
+            
+        bandwidth : float
+            Kernel bandwidth parameter
+            
+        exponent : float
+            Kernel exponent parameter
+            
+        Returns
+        -------
+        Kernel
+            Instantiated kernel object
+            
+        Raises
+        ------
+        ValueError
+            If kernel_str is not recognized
+        """
         if kernel_str in ['laplace', 'l2']:
             return LaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         elif kernel_str in ['l2_high_dim', 'l2_light']:
@@ -81,6 +273,19 @@ class RFM(torch.nn.Module):
             raise ValueError(f"Invalid kernel: {kernel_str}")
         
     def update_M(self, samples):
+        """
+        Update the Mahalanobis matrix M using AGOP on a batch of samples.
+        
+        Parameters
+        ----------
+        samples : torch.Tensor
+            Input samples of shape (n_samples, n_features)
+            
+        Returns
+        -------
+        torch.Tensor
+            AGOP matrix of shape (n_features, n_features) or (n_features,) if diagonal
+        """
         samples = samples.to(self.device)
         self.centers = self.centers.to(self.device)
 
@@ -101,15 +306,28 @@ class RFM(torch.nn.Module):
         return agop
     
     def reset_adaptive_bandwidth(self):
+        """
+        Reset the adaptive bandwidth mechanism in the kernel.
+        
+        This method is called when using adaptive bandwidth mode to reset
+        the bandwidth adaptation state at the beginning of each training round.
+        """
         self.kernel_obj._reset_adaptive_bandwidth()
         return 
 
     def tensor_copy(self, tensor):
         """
         Create a CPU copy of a tensor.
-        :param tensor: Tensor to copy.
-        :param keep_device: If True, the device of the original tensor is kept.
-        :return: CPU copy of the tensor.
+        
+        Parameters
+        ----------
+        tensor : torch.Tensor or None
+            Tensor to copy. If None, returns None.
+            
+        Returns
+        -------
+        torch.Tensor or None
+            Copied tensor, potentially moved to CPU
         """
         if tensor is None:
             return None
@@ -120,9 +338,30 @@ class RFM(torch.nn.Module):
         
     def set_categorical_indices(self, numerical_indices, categorical_indices, categorical_vectors, device=None):
         """
-        :param numerical_indices: torch.Tensor(n_num,)
-        :param categorical_indices: List of torch.Tensor(d_cat_i,) for each categorical feature
-        :param categorical_vectors: List of torch.Tensor(d_cat_i, d_cat_i) for each categorical feature. Each row is the encoding for that index.
+        Configure categorical feature handling for the kernel.
+        
+        This method sets up the kernel to handle categorical features by
+        specifying which features are numerical vs categorical and providing
+        encoding vectors for categorical features.
+        
+        Parameters
+        ----------
+        numerical_indices : torch.Tensor
+            Indices of numerical features in the input data
+            
+        categorical_indices : list of torch.Tensor
+            List where each element contains indices for one categorical feature
+            
+        categorical_vectors : list of torch.Tensor
+            List where each element is an encoding matrix for one categorical feature.
+            Each row represents the encoding for that categorical value.
+            
+        device : str or torch.device, optional
+            Device to store the categorical information. If None, uses self.device.
+            
+        Notes
+        -----
+        - Only applies to ProductLaplaceKernel
         """
         if numerical_indices is None and categorical_indices is None and categorical_vectors is None:
             if self.verbose:
@@ -136,6 +375,39 @@ class RFM(torch.nn.Module):
         return
 
     def update_best_params(self, best_metric, best_alphas, best_M, best_sqrtM, best_iter, best_bandwidth, current_metric, current_iter):
+        """
+        Update best parameters if current model performance is better.
+        
+        Parameters
+        ----------
+        best_metric : float
+            Best validation metric seen so far
+        best_alphas : torch.Tensor
+            Best model weights (alpha coefficients)
+        best_M : torch.Tensor
+            Best Mahalanobis matrix
+        best_sqrtM : torch.Tensor
+            Best square root Mahalanobis matrix
+        best_iter : int
+            Iteration number that achieved best performance
+        best_bandwidth : float
+            Best kernel bandwidth
+        current_metric : float
+            Current validation metric
+        current_iter : int
+            Current iteration number
+            
+        Returns
+        -------
+        tuple
+            Updated (best_metric, best_alphas, best_M, best_sqrtM, best_iter, best_bandwidth)
+            
+        Notes
+        -----
+        - For maximization metrics (accuracy, AUC, F1), improvement means higher values
+        - For minimization metrics (MSE), improvement means lower values
+        - Parameters are copied to avoid reference issues
+        """
         # if classification and accuracy higher, or if regression and mse lower
         maximize_metric = self.tuning_metric in ['accuracy', 'auc', 'f1', 'top_agop_vector_auc', 'top_agop_vector_pearson_r', 'top_agop_vectors_ols_auc']
         if maximize_metric and current_metric > best_metric:
@@ -157,6 +429,31 @@ class RFM(torch.nn.Module):
         return best_metric, best_alphas, best_M, best_sqrtM, best_iter, best_bandwidth
         
     def fit_predictor(self, centers, targets, bs=None, lr_scale=1, solver='solve', **kwargs):
+        """
+        Fit the kernel regression predictor using either least squares or EigenPro.
+        
+        Parameters
+        ----------
+        centers : torch.Tensor
+            Training centers (support vectors) of shape (n_centers, n_features)
+        targets : torch.Tensor
+            Target values of shape (n_centers, n_outputs)
+        bs : int, optional
+            Batch size for EigenPro optimization. If None, uses default.
+        lr_scale : float, default=1
+            Learning rate scale factor for EigenPro
+        solver : str, default='solve'
+            Solver for least squares: 'solve', 'cholesky', or 'lu'
+        **kwargs : dict
+            Additional arguments passed to the predictor fitting methods
+            
+        Notes
+        -----
+        - Method selection depends on self.fit_using_eigenpro (set during initialization)
+        - For EigenPro, can optionally prefit with a subset for initialization
+        - Adaptive bandwidth is reset if bandwidth_mode is 'adaptive'
+        - Results are stored in self.weights
+        """
         
         if self.bandwidth_mode == 'adaptive':
             # adaptive bandwidth will be reset on next kernel computation
@@ -183,6 +480,26 @@ class RFM(torch.nn.Module):
             self.weights = self.fit_predictor_lstsq(centers, targets, solver=solver)
 
     def fit_predictor_lstsq(self, centers, targets, solver='solve'):
+        """
+        Fit kernel regression using direct least squares solution.
+        
+        Parameters
+        ----------
+        centers : torch.Tensor
+            Training centers (support vectors) of shape (n_centers, n_features)
+        targets : torch.Tensor
+            Target values of shape (n_centers, n_outputs)
+        solver : str, default='solve'
+            Matrix factorization method to use:
+            - 'solve': LU decomposition with partial pivoting
+            - 'cholesky': Cholesky decomposition (assumes positive definite)
+            - 'lu': Explicit LU decomposition
+            
+        Returns
+        -------
+        torch.Tensor
+            Alpha coefficients of shape (n_centers, n_outputs)
+        """
         assert(len(centers)==len(targets))
 
         if centers.device != self.device:
@@ -209,6 +526,30 @@ class RFM(torch.nn.Module):
         return out
 
     def fit_predictor_eigenpro(self, centers, targets, bs, lr_scale, initial_weights=None, **kwargs):
+        """
+        Fit kernel regression using EigenPro iterative optimization.
+        
+        Parameters
+        ----------
+        centers : torch.Tensor
+            Training centers (support vectors) of shape (n_centers, n_features)
+        targets : torch.Tensor
+            Target values of shape (n_centers, n_outputs)
+        bs : int
+            Batch size for EigenPro iterations
+        lr_scale : float
+            Learning rate scale factor
+        initial_weights : torch.Tensor, optional
+            Initial weights for warm start. If None, uses zero initialization.
+        **kwargs : dict
+            Additional arguments passed to EigenPro fit method
+            
+        Returns
+        -------
+        torch.Tensor
+            Alpha coefficients of shape (n_centers, n_outputs)
+            
+        """
         n_classes = 1 if targets.dim()==1 else targets.shape[-1]
         ep_model = KernelModel(self.kernel, centers, n_classes, device=self.device)
         if initial_weights is not None:
@@ -219,6 +560,20 @@ class RFM(torch.nn.Module):
 
     @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     def predict(self, samples, max_batch_size=50_000):
+        """
+        Parameters
+        ----------
+        samples : torch.Tensor or numpy.ndarray
+            Input samples of shape (n_samples, n_features)
+        max_batch_size : int, default=50_000
+            Maximum batch size for prediction to control memory usage
+            
+        Returns
+        -------
+        torch.Tensor or numpy.ndarray
+            Predictions of shape (n_samples, n_outputs). Return type matches input type.
+            
+        """
         samples, original_format = self.validate_samples(samples)
         out = []
         for i in range(0, samples.shape[0], max_batch_size):
@@ -228,6 +583,29 @@ class RFM(torch.nn.Module):
         return self.convert_to_format(out, original_format)
 
     def validate_samples(self, samples):
+        """
+        Validate and normalize input samples format.
+        
+        This method ensures samples are in the correct format (torch.Tensor)
+        and device, while keeping track of the original format for later conversion.
+        
+        Parameters
+        ----------
+        samples : torch.Tensor or numpy.ndarray
+            Input samples to validate
+            
+        Returns
+        -------
+        tuple
+            (normalized_samples, original_format) where:
+            - normalized_samples: torch.Tensor on self.device
+            - original_format: dict with 'type' and 'device' keys
+            
+        Raises
+        ------
+        ValueError
+            If samples are not torch.Tensor or numpy.ndarray
+        """
         original_format = {}
         if isinstance(samples, np.ndarray):
             samples = torch.from_numpy(samples)
@@ -241,12 +619,55 @@ class RFM(torch.nn.Module):
         return samples.to(self.device), original_format
     
     def convert_to_format(self, tensor, original_format):
+        """
+        Convert tensor back to original input format.
+        
+        This method converts the processed tensor back to the format
+        of the original input (NumPy array or PyTorch tensor on original device).
+        
+        Parameters
+        ----------
+        tensor : torch.Tensor
+            Processed tensor to convert
+        original_format : dict
+            Original format information from validate_samples
+            
+        Returns
+        -------
+        torch.Tensor or numpy.ndarray
+            Tensor converted to original format
+        """
         if original_format['type'] == 'numpy':
             return tensor.cpu().numpy()
         elif original_format['type'] == 'torch':
             return tensor.to(original_format['device'])
 
     def validate_data(self, train_data, val_data):
+        """
+        Validate and preprocess training and validation data.
+        
+        This method ensures both training and validation data are in the correct
+        format and shape, converting them to PyTorch tensors and ensuring targets
+        have the appropriate dimensionality.
+        
+        Parameters
+        ----------
+        train_data : tuple
+            Training data as (X_train, y_train) where:
+            - X_train: features of shape (n_train, n_features)
+            - y_train: targets of shape (n_train,) or (n_train, n_outputs)
+        val_data : tuple
+            Validation data as (X_val, y_val) where:
+            - X_val: features of shape (n_val, n_features)
+            - y_val: targets of shape (n_val,) or (n_val, n_outputs)
+            
+        Returns
+        -------
+        tuple
+            (X_train, y_train, X_val, y_val) all as PyTorch tensors with:
+            - X tensors of shape (n_samples, n_features)
+            - y tensors of shape (n_samples, n_outputs) with n_outputs >= 1
+        """
         assert train_data is not None, "Train data must be provided"
         assert val_data is not None, "Validation data must be provided"
 
@@ -266,6 +687,29 @@ class RFM(torch.nn.Module):
         return X_train, y_train, X_val, y_val
     
     def adapt_params_to_data(self, n, d):
+        """
+        Adapt RFM parameters based on dataset characteristics.
+        
+        This method automatically adjusts key parameters (iterations, sample size,
+        epochs) based on the dataset size and dimensionality to optimize performance
+        and computational efficiency.
+        
+        Parameters
+        ----------
+        n : int
+            Number of training samples
+        d : int
+            Number of features (dimensionality)
+            
+        Notes
+        -----
+        - Adjusts early stopping multiplier for accuracy metric
+        - Sets different parameters for ProductLaplaceKernel vs other kernels
+        - Reduces iterations and sample sizes for large datasets
+        - Considers both sample size and dimensionality in parameter selection
+        - Updates self.iters, self.total_points_to_sample, self.ep_epochs
+        - Sets self.keep_device based on dimensionality vs sample size ratio
+        """
 
         if self.tuning_metric == 'accuracy' and self.early_stop_rfm:
             if n <= 30_000:
@@ -521,7 +965,37 @@ class RFM(torch.nn.Module):
         return M_batch_size
     
     def fit_M(self, samples, num_classes, M_batch_size=None, inplace=True, **kwargs):
-        """Applies AGOP to update the Mahalanobis matrix M."""
+        """
+        Fit the Mahalanobis matrix M using AGOP.
+        
+        Parameters
+        ----------
+        samples : torch.Tensor
+            Input samples of shape (n_samples, n_features)
+        num_classes : int
+            Number of output classes/dimensions
+        M_batch_size : int, optional
+            Batch size for AGOP computation. If None, computed automatically
+            based on available memory.
+        inplace : bool, default=True
+            Whether to update self.M and self.sqrtM in place. If False, returns
+            the computed M matrix without modifying the object.
+        **kwargs : dict
+            Additional arguments (unused, for compatibility)
+            
+        Returns
+        -------
+        torch.Tensor or None
+            If inplace=False, returns the computed M matrix. Otherwise returns None.
+            
+        Notes
+        -----
+        - AGOP matrix is computed by averaging gradients across batches
+        - Total sample size is limited by self.total_points_to_sample
+        - Matrix is normalized by dividing by its maximum value
+        - For kernels using sqrtM, computes matrix power using self.agop_power
+        - Batch size is automatically optimized based on available GPU memory
+        """
         
         n, d = samples.shape
         M = torch.zeros_like(self.M) if self.M is not None else (
@@ -561,9 +1035,28 @@ class RFM(torch.nn.Module):
         
     def score(self, samples, targets, metrics):
         """
-        samples: torch.Tensor of shape (n, d)
-        targets: torch.Tensor of shape (n, c)
-        metrics: list of metrics to compute
+        Evaluate model performance using specified metrics.
+        
+        Parameters
+        ----------
+        samples : torch.Tensor
+            Input samples of shape (n_samples, n_features)
+        targets : torch.Tensor
+            Target values of shape (n_samples, n_outputs)
+        metrics : list of str
+            List of metrics to compute. Supported metrics:
+            - 'accuracy': Classification accuracy
+            - 'mse': Mean squared error
+            - 'f1': F1 score
+            - 'auc': Area under ROC curve
+            - 'top_agop_vector_auc': AUC using top AGOP eigenvector projection
+            - 'top_agop_vector_pearson_r': Pearson correlation of targets with top AGOP eigenvector projection
+            - 'top_agop_vectors_ols_auc': AUC using OLS regression on top AGOP eigenvectors
+            
+        Returns
+        -------
+        dict
+            Dictionary mapping metric names to their computed values
         """
         
         out_metrics = {}
@@ -650,6 +1143,34 @@ class RFM(torch.nn.Module):
     
     @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     def predict_proba(self, samples, eps=1e-3):
+        """
+        Predict class probabilities for new samples.
+        
+        This method computes the probability of each class for the given samples
+        by first getting raw predictions from the kernel regression model, then
+        transforming them into proper probabilities through normalization.
+        
+        Parameters
+        ----------
+        samples : torch.Tensor or numpy.ndarray
+            Input samples of shape (n_samples, n_features)
+        eps : float, default=1e-3
+            Clamping value for probabilities to avoid numerical issues.
+            Probabilities are clamped to [eps, 1-eps] range.
+            
+        Returns
+        -------
+        torch.Tensor
+            Probability matrix of shape (n_samples, n_classes) where each row
+            sums to 1 and represents the probability distribution over classes.
+            
+        Notes
+        -----
+        - For binary classification, converts single-column predictions to two-column format
+        - Applies clamping to avoid log(0) or division by zero in downstream computations
+        - Normalizes probabilities to ensure they sum to 1
+        - Inherits batch processing and device management from predict() method
+        """
         predictions = self.predict(samples) 
         if predictions.shape[1] == 1:
             predictions = torch.cat([1-predictions, predictions], dim=1)
