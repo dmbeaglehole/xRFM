@@ -66,7 +66,7 @@ model.fit(X_train, y_train, X_test, y_test)
 predictions = model.predict(X_test)
 ```
 
-### Advanced Configuration
+### Custom Configuration
 
 ```python
 # Custom RFM parameters
@@ -95,33 +95,6 @@ model = xRFM(
     tuning_metric='accuracy',     # Tuning metric
     split_method='top_vector_agop_on_subset'  # Splitting strategy
 )
-```
-
-## Usage Examples
-
-### Regression Example
-
-```python
-import torch
-from xrfm import xRFM
-
-# Simple regression task
-def regression_target(X):
-    return (X[:, 0] ** 2 + 0.5 * X[:, 1])[:, None]
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-X_train = torch.randn(2000, 50, device=device)
-X_test = torch.randn(500, 50, device=device)
-y_train = regression_target(X_train)
-y_test = regression_target(X_test)
-
-model = xRFM(device=device, tuning_metric='mse')
-model.fit(X_train, y_train, X_test, y_test)
-predictions = model.predict(X_test)
-
-# Evaluate performance
-mse = torch.mean((predictions - y_test) ** 2)
-print(f"Mean Squared Error: {mse.item():.4f}")
 ```
 
 ## File Structure
@@ -193,7 +166,7 @@ Base Recursive Feature Machine implementation.
 | `'top_vector_agop_on_subset'` | Use top eigenvector of AGOP matrix |
 | `'random_agop_on_subset'` | Use random eigenvector of AGOP matrix |
 | `'top_pc_agop_on_subset'` | Use top principal component of AGOP |
-| `'random_pca'` | Use random principal component |
+| `'random_pca'` | Use vector sampled from Gaussian distribution with covariance $X\tran X$|
 | `'linear'` | Use linear regression coefficients |
 | `'fixed_vector'` | Use fixed projection vector |
 
