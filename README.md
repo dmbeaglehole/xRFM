@@ -166,7 +166,7 @@ Base Recursive Feature Machine implementation.
 | `'top_vector_agop_on_subset'` | Use top eigenvector of AGOP matrix |
 | `'random_agop_on_subset'` | Use random eigenvector of AGOP matrix |
 | `'top_pc_agop_on_subset'` | Use top principal component of AGOP |
-| `'random_pca'` | Use vector sampled from Gaussian distribution with covariance $X\tran X$|
+| `'random_pca'` | Use vector sampled from Gaussian distribution with covariance $X^\top X$|
 | `'linear'` | Use linear regression coefficients |
 | `'fixed_vector'` | Use fixed projection vector |
 
