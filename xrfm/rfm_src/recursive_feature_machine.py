@@ -1,7 +1,6 @@
 from .eigenpro import KernelModel
     
 import torch, numpy as np
-from torchmetrics.functional.classification import accuracy
 from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplaceKernel, LightLaplaceKernel
 from tqdm.contrib import tenumerate
 
@@ -1038,15 +1037,12 @@ class RFM(torch.nn.Module):
         """
 
         metrics = Metrics(metrics)
-        assert len(targets.shape) == 2 and targets.shape[1] >= 2
+        assert len(targets.shape) == 2 and targets.shape[1] >= 1
         # todo: doesn't work for binclass?
-        kwargs = dict(top_k=self.top_k, y_true_reg=targets, y_true_class=torch.argmax(targets, dim=-1))
+        kwargs = dict(top_k=self.top_k, y_true_reg=targets,
+                      y_true_class=torch.argmax(targets, dim=-1) if targets.shape[1] >= 2 else (targets >= 0.5).long())
         for q in metrics.required_quantities:
-            if q == 'y_true_reg':
-                kwargs[q] = targets
-            elif q == 'y_true_class':
-                kwargs[q] = torch.argmax(targets,dim=-1)
-            elif q == 'y_pred':
+            if q == 'y_pred':
                 kwargs[q] = self.predict(samples.to(self.device))
             elif q == 'y_pred_proba':
                 kwargs[q] = self.predict_proba(samples.to(self.device))
@@ -1054,88 +1050,6 @@ class RFM(torch.nn.Module):
                 kwargs[q] = self.agop
 
         return metrics.compute(**kwargs)
-        
-        out_metrics = {}  # todo: remove
-        if 'accuracy' in metrics:
-            preds = self.predict_proba(samples.to(self.device)).to(targets.device)
-            preds_ = torch.argmax(preds,dim=-1)
-            targets_ = torch.argmax(targets,dim=-1)
-            num_classes = preds.shape[-1]
-
-            if num_classes==2:
-                out_metrics['accuracy'] = accuracy(preds_, targets_, task="binary").item()
-            else:
-                out_metrics['accuracy'] = accuracy(preds_, targets_, task="multiclass", num_classes=num_classes).item()
-
-        if 'mse' in metrics:
-            preds = self.predict(samples.to(self.device)).to(targets.device)
-            out_metrics['mse'] = (targets - preds).pow(2).mean()
-
-        if 'f1' in metrics:
-            preds = self.predict_proba(samples.to(self.device)).to(targets.device)
-            if targets.shape[1] == 1:
-                # assume binary classification
-                targets = torch.cat([1-targets, targets], dim=1)
-            out_metrics['f1'] = f1_score(preds, targets, num_classes=preds.shape[-1]).item()
-
-        if 'auc' in metrics:
-            preds = self.predict_proba(samples.to(self.device))
-            if targets.shape[1] == 1:
-                # assume binary classification
-                targets = torch.cat([1-targets, targets], dim=1)
-            out_metrics['auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
-
-        if 'top_agop_vector_auc' in metrics:
-            assert len(targets.shape)==1 or targets.shape[1]==1, "Top AGOP Vector AUC is only defined for binary classification"
-            _, U = torch.lobpcg(self.agop, k=1)
-            top_eigenvector = U[:, 0]
-            projections = samples @ top_eigenvector
-            projections = projections.reshape(targets.shape)
-            plus_auc = roc_auc_score(targets.cpu().numpy(), torch.sigmoid(projections).cpu().numpy())
-            minus_auc = roc_auc_score(targets.cpu().numpy(), torch.sigmoid(-projections).cpu().numpy())
-            out_metrics['top_agop_vector_auc'] = max(plus_auc, minus_auc)
-
-        if 'top_agop_vector_pearson_r' in metrics:
-            assert len(targets.shape)==1 or targets.shape[1]==1, "Top AGOP Vector Pearson R is only defined for binary classification"
-            _, U = torch.lobpcg(self.agop, k=1)
-            top_eigenvector = U[:, 0]
-            projections = samples @ top_eigenvector
-            projections = projections.reshape(-1, 1)
-            targets = targets.reshape(-1, 1)
-            out_metrics['top_agop_vector_pearson_r'] = torch.abs(torch.corrcoef(torch.cat((projections, targets), dim=-1).T))[0, 1].item()
-
-        if 'top_agop_vectors_ols_auc' in metrics:
-            top_k = self.top_k
-            print(f"Computing Top AGOP Vectors OLS AUC for {top_k} eigenvectors")
-            start_time = time.time()
-            _, U = torch.lobpcg(self.agop, k=top_k)
-            end_time = time.time()
-            print(f"Time taken to compute top {top_k} eigenvectors: {end_time - start_time} seconds")
-
-            
-            top_eigenvectors = U[:, :top_k]
-            projections = samples @ top_eigenvectors
-            projections = projections.reshape(-1, top_k)
-
-            start_time = time.time()
-            XtX = projections.T @ projections
-            Xty = projections.T @ targets
-            end_time = time.time()
-            print(f"Time taken to compute XtX and Xty: {end_time - start_time} seconds")
-
-            start_time = time.time()
-            betas = torch.linalg.pinv(XtX) @ Xty
-            end_time = time.time()
-            print(f"Time taken to solve OLS: {end_time - start_time} seconds")
-
-            start_time = time.time()
-            preds = torch.sigmoid(projections @ betas).reshape(targets.shape)
-            end_time = time.time()
-            print(f"Time taken to compute OLS predictions: {end_time - start_time} seconds")
-
-            out_metrics['top_agop_vectors_ols_auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
-
-        return out_metrics
     
     @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     def predict_proba(self, samples, eps=1e-3):

@@ -113,9 +113,14 @@ class F1(Metric):
     required_quantities = ['y_true_class', 'y_pred_proba']
 
     def _compute(self, **kwargs) -> float:
-        return f1_score(kwargs['y_pred_proba'].argmax(dim=-1), kwargs['y_true_class'],
-                        num_classes=kwargs['y_pred_proba'].shape[-1])
-        # return f1_score(kwargs['y_true_class'].cpu().numpy(), kwargs['y_pred_proba'].cpu().numpy())
+        # return f1_score(kwargs['y_pred_proba'].argmax(dim=-1), kwargs['y_true_class'],
+        #                 num_classes=kwargs['y_pred_proba'].shape[-1])
+        y_pred_proba = kwargs['y_pred_proba']
+        n_classes = y_pred_proba.shape[-1]
+        # I think macro matches the implementation in utils.py
+        return sklearn.metrics.f1_score(kwargs['y_true_class'].cpu().numpy(),
+                                        y_pred_proba.argmax(dim=-1).cpu().numpy(),
+                                        average='binary' if n_classes == 2 else 'macro')
 
 
 class Logloss(Metric):

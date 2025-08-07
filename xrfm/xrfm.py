@@ -643,7 +643,7 @@ class xRFM:
                 print(f'Warning: Using floating point y with a classification metric. '
                       f'Assuming that y is already binarized / one-hot encoded.', file=sys.stderr, flush=True)
         else:
-            is_class = y.is_floating_point()
+            is_class = not y.is_floating_point()
             self.tuning_metric = 'brier' if is_class else 'mse'
 
         # determine n_classes and convert automatically
@@ -674,36 +674,6 @@ class xRFM:
             if len(y_val.shape) == 1:
                 y_val = y_val.unsqueeze(-1)
             assert len(y.shape) == 2
-
-        if y.is_floating_point():
-            self.n_classes_ = 0
-        else:
-            self.classes_ = y_train_and_val.unique().sort().values.cpu().numpy().tolist()
-            self.n_classes_ = len(self.classes_)
-
-            # self.y_orig_ = y
-            # self.y_val_orig_ = y_val
-            assert (len(y_train_and_val.shape) == 1 or
-                    (len(y_train_and_val.shape) == 2 and y_train_and_val.shape[1] == 1)), \
-                "for classification, y must be of shape (n_samples,) or (n_samples, 1)"
-            y = torch.nn.functional.one_hot(y.long(), self.n_classes_).float()
-            y_val = torch.nn.functional.one_hot(y_val.long(), self.n_classes_).float()
-
-        if self.tuning_metric is not None:
-            # check that the metric is suited for this task type
-            metric = Metric.from_name(self.tuning_metric)
-            if self.n_classes_ == 0 and not 'reg' in metric.task_types:
-                raise ValueError(
-                    f'Got regression labels, but the metric {self.tuning_metric} is not suited for regression')
-            elif self.n_classes_ == 2 and not 'binclass' in metric.task_types:
-                raise ValueError(
-                    f'Got binary classification labels, but the metric {self.tuning_metric} '
-                    'is not suited for binary classification')
-            elif self.n_classes_ > 2 and not 'multiclass' in metric.task_types:
-                raise ValueError(f'Got multiclass classification labels, but the metric {self.tuning_metric} '
-                                 'is not suited for multiclass classification')
-        else:
-            self.tuning_metric = 'mse' if self.n_classes_ <= 0 else 'brier'
 
         self.data_dim = X.shape[1]
 
@@ -742,7 +712,8 @@ class xRFM:
 
         metric = Metric.from_name(self.tuning_metric)
         assert len(targets.shape) == 2 and targets.shape[1] >= 2
-        kwargs = dict(y_true_reg=targets, y_true_class=torch.argmax(targets, dim=-1))
+        kwargs = dict(y_true_reg=targets,
+                      y_true_class=torch.argmax(targets, dim=-1) if targets.shape[1] >= 2 else (targets >= 0.5).long())
         if 'y_pred' in metric.required_quantities:
             kwargs['y_pred'] = self.predict(samples.to(self.device)).to(targets.device)
         if 'y_pred_proba' in metric.required_quantities:
@@ -771,7 +742,8 @@ class xRFM:
 
         metric = Metric.from_name(self.tuning_metric)
         assert len(targets.shape) == 2 and targets.shape[1] >= 2
-        kwargs = dict(y_true_reg=targets, y_true_class=torch.argmax(targets, dim=-1))
+        kwargs = dict(y_true_reg=targets,
+                      y_true_class=torch.argmax(targets, dim=-1) if targets.shape[1] >= 2 else (targets >= 0.5).long())
         if 'y_pred' in metric.required_quantities:
             kwargs['y_pred'] = self._predict_tree(samples.to(self.device), tree).to(targets.device)
         if 'y_pred_proba' in metric.required_quantities:
@@ -810,7 +782,7 @@ class xRFM:
         # Average predictions across trees
         pred = torch.mean(torch.stack(all_predictions), dim=0)
         if self.n_classes_ > 0:
-            return pred.argmax(dim=-1).cpu().numpy()
+            return pred.argmax(dim=-1).cpu().numpy() if pred.shape[1] >= 2 else (pred >= 0.5).cpu().long().numpy()
         else:
             return pred.cpu().numpy()
 
