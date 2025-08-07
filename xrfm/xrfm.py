@@ -1,7 +1,7 @@
 import torch
 from xrfm.rfm_src import RFM, matrix_power
 from torchmetrics.functional.classification import accuracy
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, log_loss
 from tqdm import tqdm
 import copy
 
@@ -692,6 +692,15 @@ class xRFM:
                 return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy()[:,1])
             else:
                 return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
+
+        elif self.tuning_metric == 'logloss':
+            preds = self.predict_proba(samples.to(self.device)).cpu().numpy()
+            y_true = torch.argmax(targets,dim=-1).cpu().numpy()
+            num_classes = preds.shape[-1]
+            if num_classes==2:
+                return log_loss(y_true, preds, task="binary").item()
+            else:
+                return accuracy(preds_, targets_, task="multiclass", num_classes=num_classes).item()
         
         else:
             raise ValueError(f"Invalid tuning metric: {self.tuning_metric}")
