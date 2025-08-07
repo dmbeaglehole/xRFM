@@ -4,18 +4,20 @@ import torch
 import sklearn
 import time
 
-from sklearn.metrics import roc_auc_score, mean_squared_error
+from sklearn.metrics import roc_auc_score, mean_squared_error, log_loss
+
+from xrfm.rfm_src.utils import f1_score
 
 
 class Metric:
     name: str
     display_name: str
     should_maximize: bool
-    task_types: List[Literal['reg', 'class']]
+    task_types: List[Literal['reg', 'binclass', 'multiclass']]
     required_quantities: List[Literal['y_true', 'y_pred', 'y_pred_proba', 'agop', 'topk']]
 
     def __init__(self):
-        assert self.compute == Metric.compute  # should not be overridden
+        assert self.__class__.compute == Metric.compute  # should not be overridden
 
     def compute(self, **kwargs) -> float:
         for q in self.required_quantities:
@@ -29,20 +31,10 @@ class Metric:
 
     @staticmethod
     def from_name(name: str) -> 'Metric':
-        all_metrics = [MSE]  # todo: populate
+        all_metrics = [MSE, Accuracy, Brier, AUC, Logloss, F1, TopAGOPVectorAUC, TopAGOPVectorPearsonR,
+                       TopAGOPVectorsOLSAUC]
         all_metrics_dict = {m.name: m for m in all_metrics}
         return all_metrics_dict[name]()
-
-
-class MSE(Metric):
-    name = 'mse'
-    display_name = 'MSE'
-    should_maximize = False
-    task_types = ['reg']
-    required_quantities = ['y_true', 'y_pred']
-
-    def _compute(self, **kwargs) -> float:
-        return mean_squared_error(kwargs['y_true'], kwargs['y_pred'])
 
 
 class Metrics:
@@ -59,99 +51,151 @@ class Metrics:
         return {m.name: m.compute(**kwargs) for m in self.metrics}
 
 
-def compute_metric(metrics: List[str], y_true: torch.Tensor, y_pred: torch.Tensor, **kwargs):
-    """
-    Evaluate model performance using specified metrics.
+# ----- specific metrics -----
 
-    Parameters
-    ----------
-    samples : torch.Tensor
-        Input samples of shape (n_samples, n_features)
-    targets : torch.Tensor
-        Target values of shape (n_samples, n_outputs)
-    metrics : list of str
-        List of metrics to compute. Supported metrics:
-        - 'accuracy': Classification accuracy
-        - 'mse': Mean squared error
-        - 'f1': F1 score
-        - 'auc': Area under ROC curve
-        - 'top_agop_vector_auc': AUC using top AGOP eigenvector projection
-        - 'top_agop_vector_pearson_r': Pearson correlation of targets with top AGOP eigenvector projection
-        - 'top_agop_vectors_ols_auc': AUC using OLS regression on top AGOP eigenvectors
 
-    Returns
-    -------
-    dict
-        Dictionary mapping metric names to their computed values
-    """
+class MSE(Metric):
+    name = 'mse'
+    display_name = 'MSE'
+    should_maximize = False
+    task_types = ['reg']
+    required_quantities = ['y_true_reg', 'y_pred']
 
-    out_metrics = {}
-    if 'accuracy' in metrics:
-        preds = self.predict_proba(samples.to(self.device)).to(targets.device)
-        preds_ = torch.argmax(preds, dim=-1)
-        targets_ = torch.argmax(targets, dim=-1)
-        num_classes = preds.shape[-1]
+    def _compute(self, **kwargs) -> float:
+        return (kwargs['y_true_reg'] - kwargs['y_pred']).square().mean().item()
 
-        if num_classes == 2:
-            out_metrics['accuracy'] = accuracy(preds_, targets_, task="binary").item()
-        else:
-            out_metrics['accuracy'] = accuracy(preds_, targets_, task="multiclass", num_classes=num_classes).item()
 
-    if 'mse' in metrics:
-        preds = self.predict(samples.to(self.device)).to(targets.device)
-        out_metrics['mse'] = (targets - preds).pow(2).mean()
+class Accuracy(Metric):
+    name = 'accuracy'
+    display_name = 'accuracy'
+    should_maximize = True
+    task_types = ['binclass', 'multiclass']
+    required_quantities = ['y_true_class', 'y_pred_proba']
 
-    if 'f1' in metrics:
-        preds = self.predict_proba(samples.to(self.device)).to(targets.device)
-        if targets.shape[1] == 1:
-            # assume binary classification
-            targets = torch.cat([1 - targets, targets], dim=1)
-        out_metrics['f1'] = f1_score(preds, targets, num_classes=preds.shape[-1]).item()
+    def _compute(self, **kwargs) -> float:
+        nz = torch.count_nonzero(kwargs['y_true_class'] != kwargs['y_pred_proba'].argmax(dim=-1))
+        return (nz / kwargs['y_pred_proba'].shape[-2]).item()
 
-    if 'auc' in metrics:
-        preds = self.predict_proba(samples.to(self.device))
-        if targets.shape[1] == 1:
-            # assume binary classification
-            targets = torch.cat([1 - targets, targets], dim=1)
-        out_metrics['auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
 
-    if 'top_agop_vector_auc' in metrics:
-        assert len(targets.shape) == 1 or targets.shape[
-            1] == 1, "Top AGOP Vector AUC is only defined for binary classification"
-        _, U = torch.lobpcg(self.agop, k=1)
+class Brier(Metric):
+    name = 'brier'
+    display_name = 'Brier loss'
+    should_maximize = False
+    task_types = ['binclass', 'multiclass']
+    required_quantities = ['y_true_class', 'y_pred_proba']
+
+    def _compute(self, **kwargs) -> float:
+        y_onehot = torch.nn.functional.one_hot(kwargs['y_true_class'],
+                                               num_classes=kwargs['y_pred_proba'].shape[-1]).float()
+        return (y_onehot - kwargs['y_pred_proba']).square().mean().item()
+
+
+class AUC(Metric):
+    name = 'auc'
+    display_name = 'AUC'
+    should_maximize = True
+    task_types = ['binclass', 'multiclass']
+    required_quantities = ['y_true_class', 'y_pred_proba']
+
+    def _compute(self, **kwargs) -> float:
+        # todo: this might fail in the case of missing classes
+        probas = kwargs['y_pred_proba'].cpu().numpy()
+        if probas.shape[1] == 2:
+            probas = probas[:, 1]
+        return roc_auc_score(kwargs['y_true_class'].cpu().numpy(), probas)
+
+
+class F1(Metric):
+    name = 'f1'
+    display_name = 'F1'
+    should_maximize = True
+    task_types = ['binclass', 'multiclass']
+    required_quantities = ['y_true_class', 'y_pred_proba']
+
+    def _compute(self, **kwargs) -> float:
+        return f1_score(kwargs['y_pred_proba'].argmax(dim=-1), kwargs['y_true_class'],
+                        num_classes=kwargs['y_pred_proba'].shape[-1])
+        # return f1_score(kwargs['y_true_class'].cpu().numpy(), kwargs['y_pred_proba'].cpu().numpy())
+
+
+class Logloss(Metric):
+    name = 'logloss'
+    display_name = 'log-loss'
+    should_maximize = False
+    task_types = ['binclass', 'multiclass']
+    required_quantities = ['y_true_class', 'y_pred_proba']
+
+    def _compute(self, **kwargs) -> float:
+        # could also implement manually here but that might not be equivalent in terms of clipping probabilities
+        return log_loss(kwargs['y_true_class'].cpu().numpy(), kwargs['y_pred_proba'].cpu().numpy(),
+                        labels=list(range(kwargs['y_pred_proba'].shape[-1])))
+
+
+class TopAGOPVectorAUC(Metric):
+    name = 'top_agop_vector_auc'
+    display_name = 'Top AGOP Vector AUC'
+    should_maximize = True
+    task_types = ['binclass']
+    required_quantities = ['y_true_class', 'y_pred_proba', 'agop', 'samples']
+
+    def _compute(self, **kwargs) -> float:
+        y_true_class = kwargs['y_true_class']
+        y_pred_proba = kwargs['y_pred_proba']
+        assert y_pred_proba.shape[1] == 2, "Top AGOP Vector AUC is only defined for binary classification"
+        _, U = torch.lobpcg(kwargs['agop'], k=1)
         top_eigenvector = U[:, 0]
-        projections = samples @ top_eigenvector
-        projections = projections.reshape(targets.shape)
-        plus_auc = roc_auc_score(targets.cpu().numpy(), torch.sigmoid(projections).cpu().numpy())
-        minus_auc = roc_auc_score(targets.cpu().numpy(), torch.sigmoid(-projections).cpu().numpy())
-        out_metrics['top_agop_vector_auc'] = max(plus_auc, minus_auc)
+        projections = kwargs['samples'] @ top_eigenvector
+        projections = projections.reshape(y_true_class.shape)
+        # sigmoid is probably unnecessary?
+        plus_auc = roc_auc_score(y_true_class.cpu().numpy(), torch.sigmoid(projections).cpu().numpy())
+        minus_auc = roc_auc_score(y_true_class.cpu().numpy(), torch.sigmoid(-projections).cpu().numpy())
+        return max(plus_auc, minus_auc)
 
-    if 'top_agop_vector_pearson_r' in metrics:
-        assert len(targets.shape) == 1 or targets.shape[
-            1] == 1, "Top AGOP Vector Pearson R is only defined for binary classification"
-        _, U = torch.lobpcg(self.agop, k=1)
+
+class TopAGOPVectorPearsonR(Metric):
+    name = 'top_agop_vector_pearson_r'
+    display_name = 'Top AGOP Vector Pearson R'
+    should_maximize = True
+    task_types = ['binclass']
+    required_quantities = ['y_true_class', 'y_pred_proba', 'agop', 'samples']
+
+    def _compute(self, **kwargs) -> float:
+        y_true_class = kwargs['y_true_class']
+        y_pred_proba = kwargs['y_pred_proba']
+        assert y_pred_proba.shape[1] == 2, "Top AGOP Vector Pearson R is only defined for binary classification"
+        _, U = torch.lobpcg(kwargs['agop'], k=1)
         top_eigenvector = U[:, 0]
-        projections = samples @ top_eigenvector
+        projections = kwargs['samples'] @ top_eigenvector
+
         projections = projections.reshape(-1, 1)
-        targets = targets.reshape(-1, 1)
-        out_metrics['top_agop_vector_pearson_r'] = \
-        torch.abs(torch.corrcoef(torch.cat((projections, targets), dim=-1).T))[0, 1].item()
+        targets = y_true_class.float().reshape(-1, 1)  # todo??
+        return torch.abs(torch.corrcoef(torch.cat((projections, targets), dim=-1).T))[0, 1].item()
 
-    if 'top_agop_vectors_ols_auc' in metrics:
-        top_k = self.top_k
+
+class TopAGOPVectorsOLSAUC(Metric):
+    name = 'top_agop_vectors_ols_auc'
+    display_name = 'Top AGOP Vectors OLS AUC'
+    should_maximize = True
+    task_types = ['binclass', 'multiclass']
+    required_quantities = ['y_true_class', 'y_pred_proba', 'agop', 'samples']
+
+    def _compute(self, **kwargs) -> float:
+        top_k = kwargs['top_k']
+        y_onehot = torch.nn.functional.one_hot(kwargs['y_true_class'],
+                                               num_classes=kwargs['y_pred_proba'].shape[-1]).float()
         print(f"Computing Top AGOP Vectors OLS AUC for {top_k} eigenvectors")
         start_time = time.time()
-        _, U = torch.lobpcg(self.agop, k=top_k)
+        _, U = torch.lobpcg(kwargs['agop'], k=top_k)
         end_time = time.time()
         print(f"Time taken to compute top {top_k} eigenvectors: {end_time - start_time} seconds")
 
         top_eigenvectors = U[:, :top_k]
-        projections = samples @ top_eigenvectors
+        projections = kwargs['samples'] @ top_eigenvectors
         projections = projections.reshape(-1, top_k)
 
         start_time = time.time()
         XtX = projections.T @ projections
-        Xty = projections.T @ targets
+        Xty = projections.T @ y_onehot
         end_time = time.time()
         print(f"Time taken to compute XtX and Xty: {end_time - start_time} seconds")
 
@@ -161,11 +205,11 @@ def compute_metric(metrics: List[str], y_true: torch.Tensor, y_pred: torch.Tenso
         print(f"Time taken to solve OLS: {end_time - start_time} seconds")
 
         start_time = time.time()
-        preds = torch.sigmoid(projections @ betas).reshape(targets.shape)
+        preds = torch.sigmoid(projections @ betas).reshape(y_onehot.shape)
         end_time = time.time()
         print(f"Time taken to compute OLS predictions: {end_time - start_time} seconds")
 
-        out_metrics['top_agop_vectors_ols_auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(),
-                                                                multi_class='ovr')
-
-    return out_metrics
+        preds = preds.cpu().numpy()
+        if preds.shape[1] == 2:
+            preds = preds[:, 1]
+        return roc_auc_score(kwargs['y_true_class'].cpu().numpy(), preds, multi_class='ovr')

@@ -1,10 +1,11 @@
+import sys
+
 import torch
 from xrfm.rfm_src import RFM, matrix_power
-from torchmetrics.functional.classification import accuracy
-from sklearn.metrics import roc_auc_score, log_loss
 from tqdm import tqdm
 import copy
 
+from .rfm_src.metrics import Metrics, Metric
 from .tree_utils import get_param_tree
 
 class xRFM:
@@ -48,10 +49,13 @@ class xRFM:
         'linear' : use linear regression coefficients as projection direction
         'fixed_vector' : use a fixed vector for projection (requires fixed_vector parameter)
 
-    tuning_metric : str, default='mse'
-        Metric to use for tuning the model.
+    tuning_metric : str, default=None
+        Metric to use for tuning the model (defaults to 'mse' for regression and 'brier' for classification).
         'mse' : mean squared error
         'accuracy' : accuracy
+        'brier' : Brier loss
+        'logloss' : Log loss
+        'f1' : F1 score
         'auc' : area under the ROC curve
         
     categorical_info : dict, default=None
@@ -81,7 +85,7 @@ class xRFM:
     
     def __init__(self, rfm_params=None, min_subset_size=60_000,
                  max_depth=None, device=None, n_trees=1, n_tree_iters=0, 
-                 split_method='top_vector_agop_on_subset', tuning_metric='mse', 
+                 split_method='top_vector_agop_on_subset', tuning_metric=None,
                  categorical_info=None, default_rfm_params=None,
                  fixed_vector=None, callback=None):
         self.min_subset_size = min_subset_size
@@ -95,7 +99,7 @@ class xRFM:
         self.n_tree_iters = n_tree_iters
         self.tuning_metric = tuning_metric
         self.split_method = split_method
-        self.maximizing_metric = tuning_metric in ['accuracy', 'auc', 'f1']
+        self.maximizing_metric = False if tuning_metric is None else Metric.from_name(tuning_metric).should_maximize
         self.categorical_info = categorical_info
         self.fixed_vector = fixed_vector
         self.callback = callback
@@ -619,23 +623,89 @@ class xRFM:
             Returns self.
         """
         print(f"Fitting xRFM with {self.n_trees} trees and {self.n_tree_iters} iterations per tree")
+
+
         # Convert to torch tensors if needed
         if not isinstance(X, torch.Tensor):
             X = torch.tensor(X, dtype=torch.float32, device=self.device)
-        if not isinstance(y, torch.Tensor):
-            y = torch.tensor(y, dtype=torch.float32, device=self.device)
         if not isinstance(X_val, torch.Tensor):
             X_val = torch.tensor(X_val, dtype=torch.float32, device=self.device)
-        if not isinstance(y_val, torch.Tensor):
-            y_val = torch.tensor(y_val, dtype=torch.float32, device=self.device)
+
+        y = torch.as_tensor(y).to(self.device)
+        y_val = torch.as_tensor(y_val).to(self.device)
+        y_train_and_val = torch.cat([y, y_val], dim=0)
+
+        # automatically determine whether it's classification or regression
+        if self.tuning_metric is not None:
+            metric = Metric.from_name(self.tuning_metric)
+            is_class = not ('reg' in metric.task_types)
+            if is_class and y.is_floating_point():
+                print(f'Warning: Using floating point y with a classification metric. '
+                      f'Assuming that y is already binarized / one-hot encoded.', file=sys.stderr, flush=True)
+        else:
+            is_class = y.is_floating_point()
+            self.tuning_metric = 'brier' if is_class else 'mse'
+
+        # determine n_classes and convert automatically
+        if is_class:
+            if y.is_floating_point():
+                if len(y.shape) == 1:
+                    y = y[:, None]
+                assert len(y.shape) == 2
+
+                self.n_classes_ = max(2, y.shape[1])
+            else:
+                self.n_classes_ = max(2, y_train_and_val.max().item() + 1)
+
+                if self.n_classes_ == 2:
+                    y = y.float()
+                    y_val = y_val.float()
+                else:
+                    y = torch.nn.functional.one_hot(y.long(), self.n_classes_).float()
+                    y_val = torch.nn.functional.one_hot(y_val.long(), self.n_classes_).float()
+        else:
+            self.n_classes_ = 0
+            y = y.float()
+            y_val = y_val.float()
+
+            # Ensure y has the right shape
+            if len(y.shape) == 1:
+                y = y.unsqueeze(-1)
+            if len(y_val.shape) == 1:
+                y_val = y_val.unsqueeze(-1)
+            assert len(y.shape) == 2
+
+        if y.is_floating_point():
+            self.n_classes_ = 0
+        else:
+            self.classes_ = y_train_and_val.unique().sort().values.cpu().numpy().tolist()
+            self.n_classes_ = len(self.classes_)
+
+            # self.y_orig_ = y
+            # self.y_val_orig_ = y_val
+            assert (len(y_train_and_val.shape) == 1 or
+                    (len(y_train_and_val.shape) == 2 and y_train_and_val.shape[1] == 1)), \
+                "for classification, y must be of shape (n_samples,) or (n_samples, 1)"
+            y = torch.nn.functional.one_hot(y.long(), self.n_classes_).float()
+            y_val = torch.nn.functional.one_hot(y_val.long(), self.n_classes_).float()
+
+        if self.tuning_metric is not None:
+            # check that the metric is suited for this task type
+            metric = Metric.from_name(self.tuning_metric)
+            if self.n_classes_ == 0 and not 'reg' in metric.task_types:
+                raise ValueError(
+                    f'Got regression labels, but the metric {self.tuning_metric} is not suited for regression')
+            elif self.n_classes_ == 2 and not 'binclass' in metric.task_types:
+                raise ValueError(
+                    f'Got binary classification labels, but the metric {self.tuning_metric} '
+                    'is not suited for binary classification')
+            elif self.n_classes_ > 2 and not 'multiclass' in metric.task_types:
+                raise ValueError(f'Got multiclass classification labels, but the metric {self.tuning_metric} '
+                                 'is not suited for multiclass classification')
+        else:
+            self.tuning_metric = 'mse' if self.n_classes_ <= 0 else 'brier'
 
         self.data_dim = X.shape[1]
-        
-        # Ensure y has the right shape
-        if len(y.shape) == 1:
-            y = y.unsqueeze(-1)
-        if len(y_val.shape) == 1:
-            y_val = y_val.unsqueeze(-1)
 
         # Build multiple trees
         self.trees = []
@@ -669,41 +739,16 @@ class xRFM:
         float
             Score of the model on the given samples and targets
         """
-        
 
-        if self.tuning_metric == 'accuracy':
-            preds = self.predict_proba(samples.to(self.device)).to(targets.device)
-            preds_ = torch.argmax(preds,dim=-1)
-            targets_ = torch.argmax(targets,dim=-1)
-            num_classes = preds.shape[-1]
-            if num_classes==2:
-                return accuracy(preds_, targets_, task="binary").item()
-            else:
-                return accuracy(preds_, targets_, task="multiclass", num_classes=num_classes).item()
-        
-        elif self.tuning_metric == 'mse':
-            preds = self.predict(samples.to(self.device)).to(targets.device)
-            return (targets - preds).pow(2).mean()
+        metric = Metric.from_name(self.tuning_metric)
+        assert len(targets.shape) == 2 and targets.shape[1] >= 2
+        kwargs = dict(y_true_reg=targets, y_true_class=torch.argmax(targets, dim=-1))
+        if 'y_pred' in metric.required_quantities:
+            kwargs['y_pred'] = self.predict(samples.to(self.device)).to(targets.device)
+        if 'y_pred_proba' in metric.required_quantities:
+            kwargs['y_pred_proba'] = self.predict_proba(samples.to(self.device)).to(targets.device)
 
-        elif self.tuning_metric == 'auc':
-            preds = self.predict_proba(samples.to(self.device)).to(targets.device)
-            num_classes = preds.shape[-1]
-            if num_classes==2:
-                return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy()[:,1])
-            else:
-                return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
-
-        elif self.tuning_metric == 'logloss':
-            preds = self.predict_proba(samples.to(self.device)).cpu().numpy()
-            y_true = torch.argmax(targets,dim=-1).cpu().numpy()
-            num_classes = preds.shape[-1]
-            if num_classes==2:
-                return log_loss(y_true, preds, task="binary").item()
-            else:
-                return accuracy(preds_, targets_, task="multiclass", num_classes=num_classes).item()
-        
-        else:
-            raise ValueError(f"Invalid tuning metric: {self.tuning_metric}")
+        return metric.compute(**kwargs)
         
     def score_tree(self, samples, targets, tree):
         """
@@ -721,33 +766,18 @@ class xRFM:
         Returns
         -------
         float
-            MSE loss if regression, accuracy if classification
+            Metric value for self.tuning_metric
         """
-        
-        num_classes = len(torch.unique(targets))
-        if self.tuning_metric == 'accuracy':
-            preds = self._predict_tree(samples.to(self.device), tree, proba=True).to(targets.device)
-            preds_ = torch.argmax(preds,dim=-1)
-            targets_ = torch.argmax(targets,dim=-1)
-            num_classes = preds.shape[-1]
-            if num_classes==2:
-                return accuracy(preds_, targets_, task="binary").item()
-            else:
-                return accuracy(preds_, targets_, task="multiclass", num_classes=num_classes).item()
-        
-        elif self.tuning_metric == 'mse':
-            preds = self._predict_tree(samples.to(self.device), tree).to(targets.device)
-            return (targets - preds).pow(2).mean().item()
 
-        elif self.tuning_metric == 'auc':
-            preds = self._predict_tree(samples.to(self.device), tree, proba=True).to(targets.device)
-            if num_classes <= 2:
-                return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy()[:,1])
-            else:
-                return roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy())
-        
-        else:
-            raise ValueError(f"Invalid tuning metric: {self.tuning_metric}")
+        metric = Metric.from_name(self.tuning_metric)
+        assert len(targets.shape) == 2 and targets.shape[1] >= 2
+        kwargs = dict(y_true_reg=targets, y_true_class=torch.argmax(targets, dim=-1))
+        if 'y_pred' in metric.required_quantities:
+            kwargs['y_pred'] = self._predict_tree(samples.to(self.device), tree).to(targets.device)
+        if 'y_pred_proba' in metric.required_quantities:
+            kwargs['y_pred_proba'] = self._predict_tree(samples.to(self.device), tree, proba=True).to(targets.device)
+
+        return metric.compute(**kwargs)
         
     def predict(self, X):
         """
@@ -778,7 +808,11 @@ class xRFM:
             all_predictions.append(tree_predictions)
         
         # Average predictions across trees
-        return torch.mean(torch.stack(all_predictions), dim=0)
+        pred = torch.mean(torch.stack(all_predictions), dim=0)
+        if self.n_classes_ > 0:
+            return pred.argmax(dim=-1).cpu().numpy()
+        else:
+            return pred.cpu().numpy()
 
     def predict_proba(self, X):
         """

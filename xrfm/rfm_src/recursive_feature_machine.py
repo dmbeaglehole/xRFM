@@ -4,6 +4,8 @@ import torch, numpy as np
 from torchmetrics.functional.classification import accuracy
 from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplaceKernel, LightLaplaceKernel
 from tqdm.contrib import tenumerate
+
+from .metrics import Metrics, Metric
 from .utils import matrix_power, SmoothClampedReLU, f1_score
 from .gpu_utils import with_env_var
 from sklearn.metrics import roc_auc_score
@@ -409,7 +411,8 @@ class RFM(torch.nn.Module):
         - Parameters are copied to avoid reference issues
         """
         # if classification and accuracy higher, or if regression and mse lower
-        maximize_metric = self.tuning_metric in ['accuracy', 'auc', 'f1', 'top_agop_vector_auc', 'top_agop_vector_pearson_r', 'top_agop_vectors_ols_auc']
+        # maximize_metric = self.tuning_metric in ['accuracy', 'auc', 'f1', 'top_agop_vector_auc', 'top_agop_vector_pearson_r', 'top_agop_vectors_ols_auc']
+        maximize_metric = Metric.from_name(self.tuning_metric).should_maximize
         if maximize_metric and current_metric > best_metric:
             best_metric = current_metric
             best_alphas = self.tensor_copy(self.weights)
@@ -779,7 +782,7 @@ class RFM(torch.nn.Module):
         self.iters = iters if iters is not None else self.iters
         self.ep_epochs = ep_epochs
         self.tuning_metric = tuning_metric if tuning_metric is not None else self.tuning_metric
-        self.minimize = self.tuning_metric in ['mse']
+        self.minimize = not Metric.from_name(self.tuning_metric).should_maximize
         self.early_stop_rfm = early_stop_rfm
         self.early_stop_multiplier = early_stop_multiplier
         self.center_grads = center_grads
@@ -788,41 +791,14 @@ class RFM(torch.nn.Module):
 
     def _compute_validation_metrics(self, X_train, y_train, X_val, y_val, iteration_num=None, is_final=False, **kwargs):
         """Compute validation metrics based on tuning_metric."""
-        if self.tuning_metric == 'accuracy':
-            val_metrics = self.score(X_val, y_val, metrics=['accuracy'])
-            if self.verbose:
-                prefix = "Final" if is_final else f"Round {iteration_num}"
-                print(f"{prefix} Val Acc: {100*val_metrics['accuracy']:.2f}%")
-        elif self.tuning_metric == 'auc':
-            val_metrics = self.score(X_val, y_val, metrics=['auc'])
-            if self.verbose:
-                prefix = "Final" if is_final else f"Round {iteration_num}"
-                print(f"{prefix} Val AUC: {val_metrics['auc']:.4f}")
-        elif self.tuning_metric == 'top_agop_vector_auc':
+
+        metric = Metric.from_name(self.tuning_metric)
+        if 'agop' in metric.required_quantities:
             self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
-            val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_auc'])
-            if self.verbose:
-                prefix = "Final" if is_final else f"Round {iteration_num}"
-                print(f"{prefix} Val Top AGOP Vector AUC: {val_metrics['top_agop_vector_auc']:.4f}")
-        elif self.tuning_metric == 'top_agop_vector_pearson_r':
-            self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
-            val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_pearson_r'])
-            if self.verbose:
-                prefix = "Final" if is_final else f"Round {iteration_num}"
-                print(f"{prefix} Val Top AGOP Vector Pearson R: {val_metrics['top_agop_vector_pearson_r']:.4f}")
-        elif self.tuning_metric == 'top_agop_vectors_ols_auc':
-            self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
-            val_metrics = self.score(X_val, y_val, metrics=['top_agop_vectors_ols_auc'])
-            if self.verbose:
-                prefix = "Final" if is_final else f"Round {iteration_num}"
-                print(f"{prefix} Val Top AGOP Vectors OLS AUC: {val_metrics['top_agop_vectors_ols_auc']:.4f}")
-        else:
-            val_metrics = self.score(X_val, y_val, metrics=['mse'])
-            if self.verbose:
-                prefix = "Final" if is_final else f"Round {iteration_num}"
-                print(f"{prefix} Val MSE: {val_metrics['mse']:.4f}")
-        
-        return val_metrics
+        val_metrics = self.score(X_val, y_val, metrics=[self.tuning_metric])
+        if self.verbose:
+            prefix = "Final" if is_final else f"Round {iteration_num}"
+            print(f"{prefix} Val {metric.display_name}: {val_metrics[self.tuning_metric]:.4f}")
 
     def _should_early_stop(self, current_metric, best_metric):
         """Check if early stopping criteria is met."""
@@ -1047,8 +1023,10 @@ class RFM(torch.nn.Module):
             List of metrics to compute. Supported metrics:
             - 'accuracy': Classification accuracy
             - 'mse': Mean squared error
+            - 'brier': Brier loss (= MSE to one-hot encoded labels for classification)
+            - 'logloss': Log loss
             - 'f1': F1 score
-            - 'auc': Area under ROC curve
+            - 'auc': Area under ROC curve (one-vs-rest for multiclass)
             - 'top_agop_vector_auc': AUC using top AGOP eigenvector projection
             - 'top_agop_vector_pearson_r': Pearson correlation of targets with top AGOP eigenvector projection
             - 'top_agop_vectors_ols_auc': AUC using OLS regression on top AGOP eigenvectors
@@ -1058,8 +1036,26 @@ class RFM(torch.nn.Module):
         dict
             Dictionary mapping metric names to their computed values
         """
+
+        metrics = Metrics(metrics)
+        assert len(targets.shape) == 2 and targets.shape[1] >= 2
+        # todo: doesn't work for binclass?
+        kwargs = dict(top_k=self.top_k, y_true_reg=targets, y_true_class=torch.argmax(targets, dim=-1))
+        for q in metrics.required_quantities:
+            if q == 'y_true_reg':
+                kwargs[q] = targets
+            elif q == 'y_true_class':
+                kwargs[q] = torch.argmax(targets,dim=-1)
+            elif q == 'y_pred':
+                kwargs[q] = self.predict(samples.to(self.device))
+            elif q == 'y_pred_proba':
+                kwargs[q] = self.predict_proba(samples.to(self.device))
+            elif q == 'agop':
+                kwargs[q] = self.agop
+
+        return metrics.compute(**kwargs)
         
-        out_metrics = {}
+        out_metrics = {}  # todo: remove
         if 'accuracy' in metrics:
             preds = self.predict_proba(samples.to(self.device)).to(targets.device)
             preds_ = torch.argmax(preds,dim=-1)
