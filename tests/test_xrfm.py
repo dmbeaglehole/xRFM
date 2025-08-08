@@ -5,8 +5,10 @@ from sklearn.model_selection import train_test_split
 
 from xrfm import xRFM
 
-
-def test_regression():
+@pytest.mark.parametrize(
+    'time_limit_s', [0, None]
+)
+def test_regression(time_limit_s):
     def target_function(X):
         return torch.cat([
             (X[:, 0] > 0)[:, None],
@@ -15,7 +17,7 @@ def test_regression():
 
     # Setup device and model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = xRFM(device=device, tuning_metric='mse')
+    model = xRFM(device=device, tuning_metric='mse', time_limit_s=time_limit_s)
 
     n_samples = 2000
     n_features = 10

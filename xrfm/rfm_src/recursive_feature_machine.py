@@ -81,7 +81,7 @@ class RFM(torch.nn.Module):
 
     def __init__(self, kernel: Union[Kernel, str], iters=5, bandwidth=10., exponent=1., bandwidth_mode='constant', 
                  agop_power=0.5, device=None, diag=False, verbose=True, mem_gb=None, tuning_metric='mse', 
-                 categorical_info=None, fast_categorical=True, class_converter=None):
+                 categorical_info=None, fast_categorical=True, class_converter=None, time_limit_s=None):
         """
         Parameters
         ----------
@@ -150,6 +150,11 @@ class RFM(torch.nn.Module):
             A classification converter for converting between numerical representations predicted by the model
             and classification probabilities or thresholded predictions used by the metrics.
             Only needed for classification.
+
+        time_limit_s : float, optional
+            If specified as a float, imposes a time limit (in seconds) on the fitting process.
+            RFM will try to fit fewer iterations if that is estimated to be needed to stay below the time limit,
+            however, it will always fit at least one iteration.
         
         Attributes
         ----------
@@ -204,6 +209,7 @@ class RFM(torch.nn.Module):
         self.tuning_metric = tuning_metric
         self.use_sqrtM = self.kernel_obj.use_sqrtM
         self.class_converter = class_converter
+        self.time_limit_s = time_limit_s
         
         if categorical_info is not None and fast_categorical: 
             if isinstance(self.kernel_obj, ProductLaplaceKernel):
@@ -805,6 +811,7 @@ class RFM(torch.nn.Module):
         if self.verbose:
             prefix = "Final" if is_final else f"Round {iteration_num}"
             print(f"{prefix} Val {metric.display_name}: {val_metrics[self.tuning_metric]:.4f}")
+        return val_metrics
 
     def _should_early_stop(self, current_metric, best_metric):
         """Check if early stopping criteria is met."""
@@ -866,8 +873,15 @@ class RFM(torch.nn.Module):
         early_stopped = False
         best_bandwidth = self.kernel_obj.bandwidth+0
 
+        start_time = time.time()
+
         # Main training loop
         for i in range(self.iters):
+            # check time limit
+            if i > 0 and self.time_limit_s is not None and (i+1)/i*(time.time()-start_time) > self.time_limit_s:
+                break  # would expect to exceed the time limit, so stop
+
+
             if callback is not None:
                 callback(iteration=i)
 
