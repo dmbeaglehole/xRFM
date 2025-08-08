@@ -1,3 +1,4 @@
+from .class_conversion import ClassificationConverter
 from .eigenpro import KernelModel
     
 import torch, numpy as np
@@ -80,7 +81,7 @@ class RFM(torch.nn.Module):
 
     def __init__(self, kernel: Union[Kernel, str], iters=5, bandwidth=10., exponent=1., bandwidth_mode='constant', 
                  agop_power=0.5, device=None, diag=False, verbose=True, mem_gb=None, tuning_metric='mse', 
-                 categorical_info=None, fast_categorical=True):
+                 categorical_info=None, fast_categorical=True, class_converter=None):
         """
         Parameters
         ----------
@@ -144,6 +145,11 @@ class RFM(torch.nn.Module):
         fast_categorical : bool, default=True
             Whether to use optimized categorical feature handling.
             Only applies to ProductLaplaceKernel.
+
+        class_converter : ClassificationConverter, optional, default=None
+            A classification converter for converting between numerical representations predicted by the model
+            and classification probabilities or thresholded predictions used by the metrics.
+            Only needed for classification.
         
         Attributes
         ----------
@@ -197,6 +203,7 @@ class RFM(torch.nn.Module):
         self.verbose = verbose
         self.tuning_metric = tuning_metric
         self.use_sqrtM = self.kernel_obj.use_sqrtM
+        self.class_converter = class_converter
         
         if categorical_info is not None and fast_categorical: 
             if isinstance(self.kernel_obj, ProductLaplaceKernel):
@@ -844,6 +851,11 @@ class RFM(torch.nn.Module):
         print(f"Fitting RFM with ntrain: {n}, d: {d}, and nval: {X_val.shape[0]}")
         print("="*70)
 
+
+        if self.class_converter is None:
+            self.class_converter = ClassificationConverter(mode='zero_one', n_classes=max(2, y_train.shape[1]))
+
+
         self.adapt_params_to_data(n, d)
         
         # Initialize tracking variables
@@ -1038,16 +1050,15 @@ class RFM(torch.nn.Module):
 
         metrics = Metrics(metrics)
         assert len(targets.shape) == 2 and targets.shape[1] >= 1
-        # todo: doesn't work for binclass?
-        kwargs = dict(top_k=self.top_k, y_true_reg=targets,
-                      y_true_class=torch.argmax(targets, dim=-1) if targets.shape[1] >= 2 else (targets >= 0.5).long())
-        for q in metrics.required_quantities:
-            if q == 'y_pred':
-                kwargs[q] = self.predict(samples.to(self.device))
-            elif q == 'y_pred_proba':
-                kwargs[q] = self.predict_proba(samples.to(self.device))
-            elif q == 'agop':
-                kwargs[q] = self.agop
+        kwargs = dict(top_k=self.top_k, y_true_reg=targets)
+        if 'y_pred' in metrics.required_quantities:
+            kwargs['y_pred'] = self.predict(samples.to(self.device))
+        if 'y_pred_proba' in metrics.required_quantities:
+            kwargs['y_pred_proba'] = self.predict_proba(samples.to(self.device))
+        if 'agop' in metrics.required_quantities:
+            kwargs['agop'] = self.agop
+        if 'y_true_class' in metrics.required_quantities:
+            kwargs['y_true_class'] = self.class_converter.numerical_to_labels(targets)
 
         return metrics.compute(**kwargs)
     
@@ -1082,9 +1093,4 @@ class RFM(torch.nn.Module):
         - Inherits batch processing and device management from predict() method
         """
         predictions = self.predict(samples) 
-        if predictions.shape[1] == 1:
-            predictions = torch.cat([1-predictions, predictions], dim=1)
-        
-        predictions = torch.clamp(predictions, eps, 1-eps) # clamp predictions to [eps, 1-eps]
-        predictions /= predictions.sum(dim=1, keepdim=True) # normalize predictions to sum to 1
-        return predictions
+        return self.class_converter.numerical_to_probas(predictions, eps=eps)

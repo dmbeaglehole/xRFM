@@ -1,10 +1,14 @@
 import sys
 
+import numpy as np
 import torch
+from sklearn.base import ClassifierMixin, BaseEstimator, RegressorMixin
+
 from xrfm.rfm_src import RFM, matrix_power
 from tqdm import tqdm
 import copy
 
+from .rfm_src.class_conversion import ClassificationConverter
 from .rfm_src.metrics import Metrics, Metric
 from .tree_utils import get_param_tree
 
@@ -161,8 +165,7 @@ class xRFM:
             Copied tree structure
         """
         return copy.deepcopy(tree)
-    
-    
+
     def _generate_random_projection(self, dim):
         """
         Generate a random unit vector for data projection.
@@ -422,7 +425,7 @@ class xRFM:
 
             # Create and fit a TabRFM model on this subset
             model = RFM(**self.rfm_params['model'], tuning_metric=self.tuning_metric, 
-                        categorical_info=self.categorical_info, device=self.device)
+                        categorical_info=self.categorical_info, device=self.device, **self.extra_rfm_params_)
             
             model.fit((X, y), (X_val, y_val), **self.rfm_params['fit'], callback=self.callback)
             return {'type': 'leaf', 'model': model, 'train_indices': train_indices, 'is_root': is_root}
@@ -665,15 +668,18 @@ class xRFM:
                 assert len(y.shape) == 2
 
                 self.n_classes_ = max(2, y.shape[1])
+                self.class_converter_ = ClassificationConverter(mode=self.classification_mode,
+                                                                n_classes=self.n_classes_)
             else:
                 self.n_classes_ = max(2, y_train_and_val.max().item() + 1)
 
-                if self.n_classes_ == 2:
-                    y = y.float()
-                    y_val = y_val.float()
-                else:
-                    y = torch.nn.functional.one_hot(y.long(), self.n_classes_).float()
-                    y_val = torch.nn.functional.one_hot(y_val.long(), self.n_classes_).float()
+                self.class_converter_ = ClassificationConverter(mode=self.classification_mode, labels=y,
+                                                                n_classes=self.n_classes_)
+
+                y = self.class_converter_.labels_to_numerical(y)
+                y_val = self.class_converter_.labels_to_numerical(y_val)
+
+            self.extra_rfm_params_ = dict(class_converter=self.class_converter_)
         else:
             self.n_classes_ = 0
             y = y.float()
@@ -685,6 +691,7 @@ class xRFM:
             if len(y_val.shape) == 1:
                 y_val = y_val.unsqueeze(-1)
             assert len(y.shape) == 2
+            self.extra_rfm_params_ = dict()
 
         self.data_dim = X.shape[1]
 
@@ -723,12 +730,13 @@ class xRFM:
 
         metric = Metric.from_name(self.tuning_metric)
         assert len(targets.shape) == 2 and targets.shape[1] >= 2
-        kwargs = dict(y_true_reg=targets,
-                      y_true_class=torch.argmax(targets, dim=-1) if targets.shape[1] >= 2 else (targets >= 0.5).long())
+        kwargs = dict(y_true_reg=targets)
         if 'y_pred' in metric.required_quantities:
             kwargs['y_pred'] = self.predict(samples.to(self.device)).to(targets.device)
         if 'y_pred_proba' in metric.required_quantities:
             kwargs['y_pred_proba'] = self.predict_proba(samples.to(self.device)).to(targets.device)
+        if 'y_true_class' in metric.required_quantities:
+            kwargs['y_true_class'] = self.class_converter_.numerical_to_labels(targets)
 
         return metric.compute(**kwargs)
         
@@ -753,12 +761,13 @@ class xRFM:
 
         metric = Metric.from_name(self.tuning_metric)
         assert len(targets.shape) == 2 and targets.shape[1] >= 2
-        kwargs = dict(y_true_reg=targets,
-                      y_true_class=torch.argmax(targets, dim=-1) if targets.shape[1] >= 2 else (targets >= 0.5).long())
+        kwargs = dict(y_true_reg=targets)
         if 'y_pred' in metric.required_quantities:
             kwargs['y_pred'] = self._predict_tree(samples.to(self.device), tree).to(targets.device)
         if 'y_pred_proba' in metric.required_quantities:
             kwargs['y_pred_proba'] = self._predict_tree(samples.to(self.device), tree, proba=True).to(targets.device)
+        if 'y_true_class' in metric.required_quantities:
+            kwargs['y_true_class'] = self.class_converter_.numerical_to_labels(targets)
 
         return metric.compute(**kwargs)
         
@@ -793,7 +802,7 @@ class xRFM:
         # Average predictions across trees
         pred = torch.mean(torch.stack(all_predictions), dim=0)
         if self.n_classes_ > 0:
-            return pred.argmax(dim=-1).cpu().numpy() if pred.shape[1] >= 2 else (pred >= 0.5).cpu().long().numpy()
+            return self.class_converter_.numerical_to_labels(pred).cpu().numpy()
         else:
             return pred.cpu().numpy()
 
@@ -920,7 +929,7 @@ class xRFM:
             if tree['type'] == 'leaf':
                 leaf_model = RFM(**self.rfm_params['model'], 
                                  categorical_info=self.categorical_info, 
-                                 device=self.device)
+                                 device=self.device, **self.extra_rfm_params_)
                 leaf_model.kernel_obj.bandwidth = tree['bandwidth']
                 leaf_model.weights = tree['weights']
                 leaf_model.M = tree['M']
@@ -983,7 +992,7 @@ class xRFM:
         torch.Tensor
             AGOP matrix of shape (n_features, n_features)
         """
-        model = RFM(**self.default_rfm_params['model'], device=self.device)
+        model = RFM(**self.default_rfm_params['model'], device=self.device, **self.extra_rfm_params_)
 
         subset_size = min(subset_size, len(X))
         subset_train_size = int(subset_size * 0.95) # 95/5 split, probably won't need the val data.
@@ -1077,3 +1086,23 @@ class xRFM:
         
         return X_leaf_groups, X_leaf_group_indices, leaf_nodes
 
+
+class xRFMRegressor(RegressorMixin, BaseEstimator):
+    pass
+
+
+class xRFMClassifier(ClassifierMixin, BaseEstimator):
+    # should probably inherit from a common constructor class
+    def fit(self, X, y):
+        # convert to regression targets
+        # add class converter
+        # then use the regressor
+        return self
+
+    def predict_proba(self, X) -> np.ndarray:
+        # predict using the regressor
+        # then use the class converter
+        pass
+
+    def predict(self, X) -> np.ndarray:
+        return np.argmax(self.predict_proba(X), axis=-1)
