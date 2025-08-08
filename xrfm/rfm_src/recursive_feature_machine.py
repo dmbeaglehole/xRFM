@@ -129,6 +129,7 @@ class RFM(torch.nn.Module):
         tuning_metric : str, default='mse'
             Metric for model selection and early stopping. Options:
             - 'mse': Mean squared error (for regression)
+            - 'mae': Mean absolute error (for regression)
             - 'accuracy': Classification accuracy
             - 'auc': Area under ROC curve
             - 'f1': F1 score
@@ -1048,6 +1049,7 @@ class RFM(torch.nn.Module):
             List of metrics to compute. Supported metrics:
             - 'accuracy': Classification accuracy
             - 'mse': Mean squared error
+            - 'mae': Mean absolute error
             - 'brier': Brier loss (= MSE to one-hot encoded labels for classification)
             - 'logloss': Log loss
             - 'f1': F1 score

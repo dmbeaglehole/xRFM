@@ -58,6 +58,7 @@ class xRFM:
     tuning_metric : str, default=None
         Metric to use for tuning the model (defaults to 'mse' for regression and 'brier' for classification).
         'mse' : mean squared error
+        'mae' : mean absolute error
         'accuracy' : accuracy
         'brier' : Brier loss
         'logloss' : Log loss

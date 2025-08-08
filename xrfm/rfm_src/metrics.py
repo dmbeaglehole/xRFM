@@ -31,7 +31,7 @@ class Metric:
 
     @staticmethod
     def from_name(name: str) -> 'Metric':
-        all_metrics = [MSE, Accuracy, Brier, AUC, Logloss, F1, TopAGOPVectorAUC, TopAGOPVectorPearsonR,
+        all_metrics = [MSE, MAE, Accuracy, Brier, AUC, Logloss, F1, TopAGOPVectorAUC, TopAGOPVectorPearsonR,
                        TopAGOPVectorsOLSAUC]
         all_metrics_dict = {m.name: m for m in all_metrics}
         return all_metrics_dict[name]()
@@ -63,6 +63,17 @@ class MSE(Metric):
 
     def _compute(self, **kwargs) -> float:
         return (kwargs['y_true_reg'] - kwargs['y_pred']).square().mean().item()
+
+
+class MAE(Metric):
+    name = 'mae'
+    display_name = 'MAE'
+    should_maximize = False
+    task_types = ['reg']
+    required_quantities = ['y_true_reg', 'y_pred']
+
+    def _compute(self, **kwargs) -> float:
+        return (kwargs['y_true_reg'] - kwargs['y_pred']).abs().mean().item()
 
 
 class Accuracy(Metric):
