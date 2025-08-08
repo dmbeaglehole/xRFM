@@ -17,7 +17,7 @@ def test_regression(time_limit_s):
 
     # Setup device and model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = xRFM(device=device, tuning_metric='mse', time_limit_s=time_limit_s)
+    model = xRFM(device=device, tuning_metric='mse', time_limit_s=time_limit_s, n_threads=1)
 
     n_samples = 2000
     n_features = 10

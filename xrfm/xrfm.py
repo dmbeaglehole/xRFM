@@ -96,6 +96,9 @@ class xRFM:
 
     time_limit_s : float, optional
         Time limit in seconds.
+
+    n_threads : int, optional
+        Number of CPU threads to use.
     
     Notes
     -----
@@ -107,7 +110,7 @@ class xRFM:
                  max_depth=None, device=None, n_trees=1, n_tree_iters=0,
                  split_method='top_vector_agop_on_subset', tuning_metric=None,
                  categorical_info=None, default_rfm_params=None,
-                 fixed_vector=None, callback=None, classification_mode='zero_one', time_limit_s=None):
+                 fixed_vector=None, callback=None, classification_mode='zero_one', time_limit_s=None, n_threads=None):
         self.min_subset_size = min_subset_size
         self.rfm_params = rfm_params
         self.max_depth = max_depth
@@ -125,6 +128,7 @@ class xRFM:
         self.callback = callback
         self.classification_mode = classification_mode
         self.time_limit_s = time_limit_s
+        self.n_threads = n_threads
 
         # parameters for refilling the validation set at leaves
         self.min_val_size = 1500
@@ -668,6 +672,10 @@ class xRFM:
         """
         print(f"Fitting xRFM with {self.n_trees} trees and {self.n_tree_iters} iterations per tree")
 
+        if self.n_threads is not None:
+            old_n_threads = torch.get_num_threads()
+            torch.set_num_threads(self.n_threads)
+
         # Convert to torch tensors if needed
         if not isinstance(X, torch.Tensor):
             X = torch.tensor(X, dtype=torch.float32, device=self.device)
@@ -743,6 +751,9 @@ class xRFM:
             if tree['type'] == 'leaf':
                 print("Tree has no split, stopping training")
                 break
+
+        if self.n_threads is not None:
+            torch.set_num_threads(old_n_threads)
 
         return self
 
@@ -826,6 +837,10 @@ class xRFM:
         if self.trees is None:
             raise ValueError("Model has not been fitted yet.")
 
+        if self.n_threads is not None:
+            old_n_threads = torch.get_num_threads()
+            torch.set_num_threads(self.n_threads)
+
         # Convert to torch tensor if needed
         if not isinstance(X, torch.Tensor):
             X = torch.tensor(X, dtype=torch.float32, device=self.device)
@@ -839,6 +854,10 @@ class xRFM:
 
         # Average predictions across trees
         pred = torch.mean(torch.stack(all_predictions), dim=0)
+
+        if self.n_threads is not None:
+            torch.set_num_threads(old_n_threads)
+
         if self.n_classes_ > 0:
             return self.class_converter_.numerical_to_labels(pred).cpu().numpy()
         else:
@@ -863,6 +882,10 @@ class xRFM:
         if self.trees is None:
             raise ValueError("Model has not been fitted yet.")
 
+        if self.n_threads is not None:
+            old_n_threads = torch.get_num_threads()
+            torch.set_num_threads(self.n_threads)
+
         # Convert to torch tensor if needed
         if not isinstance(X, torch.Tensor):
             X = torch.tensor(X, dtype=torch.float32, device=self.device)
@@ -871,7 +894,12 @@ class xRFM:
             tree_probas = self._predict_tree(X, tree, proba=True)
             all_probas.append(tree_probas)
 
-        return torch.mean(torch.stack(all_probas), dim=0)
+        result = torch.mean(torch.stack(all_probas), dim=0)
+
+        if self.n_threads is not None:
+            torch.set_num_threads(old_n_threads)
+
+        return result
 
 
     def _predict_tree(self, X, tree, proba=False):
@@ -918,6 +946,7 @@ class xRFM:
 
         order = torch.cat(X_leaf_group_indices, dim=0)
         return reorder_tensor(torch.cat(predictions, dim=0), order)
+
 
 
     def load_state_dict(self, state_dict, X_train):
