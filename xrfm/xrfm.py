@@ -1128,24 +1128,3 @@ class xRFM:
                 ))
 
         return X_leaf_groups, X_leaf_group_indices, leaf_nodes
-
-
-class xRFMRegressor(RegressorMixin, BaseEstimator):
-    pass
-
-
-class xRFMClassifier(ClassifierMixin, BaseEstimator):
-    # should probably inherit from a common constructor class
-    def fit(self, X, y):
-        # convert to regression targets
-        # add class converter
-        # then use the regressor
-        return self
-
-    def predict_proba(self, X) -> np.ndarray:
-        # predict using the regressor
-        # then use the class converter
-        pass
-
-    def predict(self, X) -> np.ndarray:
-        return np.argmax(self.predict_proba(X), axis=-1)
