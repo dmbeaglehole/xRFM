@@ -36,9 +36,12 @@ def test_regression():
 @pytest.mark.parametrize(
     'classification_mode', ['zero_one', 'prevalence']
 )
-def test_classification(tuning_metric, classification_mode):
+@pytest.mark.parametrize(
+    'n_classes', [2, 3]
+)
+def test_classification(tuning_metric, classification_mode, n_classes):
     def target_function(X):
-        return X[:, 0] > 0
+        return torch.clamp(X[:, 0].long(), min=0, max=n_classes-1)
 
     # Setup device and model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

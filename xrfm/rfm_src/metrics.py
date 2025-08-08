@@ -102,7 +102,7 @@ class AUC(Metric):
         probas = kwargs['y_pred_proba'].cpu().numpy()
         if probas.shape[1] == 2:
             probas = probas[:, 1]
-        return roc_auc_score(kwargs['y_true_class'].cpu().numpy(), probas)
+        return roc_auc_score(kwargs['y_true_class'].cpu().numpy(), probas, multi_class='ovr')
 
 
 class F1(Metric):
