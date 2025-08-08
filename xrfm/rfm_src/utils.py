@@ -1,4 +1,6 @@
 '''Helper functions.'''
+from typing import Literal
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -102,4 +104,49 @@ def stable_matrix_power(M, power):
         return M**power
     else:
         raise ValueError(f"Invalid matrix shape for square root: {M.shape}")
+
+
+# class ClassificationConverter:
+#     def __init__(self, mode: Literal['zero_one', 'symmetric'], labels: torch.Tensor, n_classes: int):
+#         """
+#         Args:
+#             mode: 'default' encodes binary values to {0, 1}, while 'symmetric' encodes them to {-1, 1}.
+#             Multiclass is encoded to one-hot labels either way.
+#             labels: tensor of shape (n_samples,) using torch.long dtype.
+#             n_classes: Number of classes.
+#         """
+#         assert mode in ['zero_one', 'symmetric']
+#         self.mode = mode
+#         self.labels = labels
+#         self.n_classes = n_classes
+#
+#     def labels_to_numerical(self, labels: torch.Tensor) -> torch.Tensor:
+#         if self.n_classes <= 2:
+#             if self.mode == 'zero_one':
+#                 return labels.float()
+#             elif self.mode == 'symmetric':
+#                 return 2*labels.float()-1
+#             else:
+#                 raise RuntimeError()
+#         else:
+#             return torch.nn.functional.one_hot(labels, num_classes=self.n_classes).float()
+#
+#     def numerical_to_probas(self, num: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
+#         if self.mode == 'symmetric' and num.shape[1] == 1:
+#             num = 0.5 * (num + 1.0)
+#         if num.shape[1] == 1:
+#             num = torch.cat([1 - num, num], dim=1)
+#
+#         num = torch.clamp(num, eps, 1 - eps)  # clamp predictions to [eps, 1-eps]
+#         num /= num.sum(dim=1, keepdim=True)  # normalize predictions to sum to 1
+#         return num
+#
+#     def numerical_to_labels(self, num: torch.Tensor):
+#         if self.n_classes <= 2 and num.shape[1] == 1:
+#             if self.mode == 'zero_one':
+#                 return (num >= 0.5).long()
+#             elif self.mode == 'symmetric':
+#                 return (num >= 0.0).long()
+#         else:
+#             return num.argmax(dim=-1)
 

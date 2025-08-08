@@ -77,17 +77,27 @@ class xRFM:
     callback : function, default=None
         Callback function to call after each iteration of each Leaf RFM.
         The function must accept an 'iteration' argument.
+
+    classification_mode : str, default='zero_one'
+        How to convert classification problems to regression problems.
+        'zero_one': Binary problems are converted to {0, 1}, multiclass to one-hot labels.
+        'prevalence': Problems with $k$ classes are encoded to a k-1 dimensional simplex,
+        such that zero corresponds to the empirical probability distribution of train labels.
+        This way, the predictions will converge to this empirical distribution far away from the training data.
+        This mode will also be slightly faster than 'zero_one' for multiclass problems
+        since only k-1 instead of k linear systems need to be solved for each leaf RFM.
     
     Notes
     -----
-    The model follows sklearn's estimator interface with fit, predict, and score methods.
+    The model follows sklearn's estimator interface with fit, predict, predict_proba, and score methods,
+    but does not comply with all requirements.
     """
     
     def __init__(self, rfm_params=None, min_subset_size=60_000,
                  max_depth=None, device=None, n_trees=1, n_tree_iters=0, 
                  split_method='top_vector_agop_on_subset', tuning_metric=None,
                  categorical_info=None, default_rfm_params=None,
-                 fixed_vector=None, callback=None):
+                 fixed_vector=None, callback=None, classification_mode='zero_one'):
         self.min_subset_size = min_subset_size
         self.rfm_params = rfm_params
         self.max_depth = max_depth
@@ -103,6 +113,7 @@ class xRFM:
         self.categorical_info = categorical_info
         self.fixed_vector = fixed_vector
         self.callback = callback
+        self.classification_mode = classification_mode
         
         # parameters for refilling the validation set at leaves
         self.min_val_size = 1500
@@ -1065,4 +1076,4 @@ class xRFM:
                 ))
         
         return X_leaf_groups, X_leaf_group_indices, leaf_nodes
-    
+
