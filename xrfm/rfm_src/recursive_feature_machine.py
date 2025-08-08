@@ -6,7 +6,7 @@ from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplac
 from tqdm.contrib import tenumerate
 
 from .metrics import Metrics, Metric
-from .utils import matrix_power, SmoothClampedReLU, f1_score
+from .utils import matrix_power, SmoothClampedReLU
 from .gpu_utils import with_env_var
 from sklearn.metrics import roc_auc_score
 import time
@@ -833,6 +833,7 @@ class RFM(torch.nn.Module):
         :param val_data: tuple of (X, y)
         :param iters: number of iterations to run
         :param method: 'lstsq' or 'eigenpro'
+        :param reg: Regularization coefficient (higher is more regularization).
         :param classification: if True, the model will tune for (and report) accuracy, else just MSE loss
         :param verbose: if True, print progress
         :param M_batch_size: batch size over samples for AGOP computation

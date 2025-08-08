@@ -6,8 +6,6 @@ import time
 
 from sklearn.metrics import roc_auc_score, mean_squared_error, log_loss
 
-from xrfm.rfm_src.utils import f1_score
-
 
 class Metric:
     name: str
@@ -124,8 +122,6 @@ class F1(Metric):
     required_quantities = ['y_true_class', 'y_pred_proba']
 
     def _compute(self, **kwargs) -> float:
-        # return f1_score(kwargs['y_pred_proba'].argmax(dim=-1), kwargs['y_true_class'],
-        #                 num_classes=kwargs['y_pred_proba'].shape[-1])
         y_pred_proba = kwargs['y_pred_proba']
         n_classes = y_pred_proba.shape[-1]
         # I think macro matches the implementation in utils.py
