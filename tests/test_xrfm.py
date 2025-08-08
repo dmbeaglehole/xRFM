@@ -33,13 +33,16 @@ def test_regression():
 @pytest.mark.parametrize(
     "tuning_metric", [None, 'accuracy', 'brier', 'logloss', 'f1', 'auc']
 )
-def test_classification(tuning_metric):
+@pytest.mark.parametrize(
+    'classification_mode', ['zero_one', 'prevalence']
+)
+def test_classification(tuning_metric, classification_mode):
     def target_function(X):
         return X[:, 0] > 0
 
     # Setup device and model
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = xRFM(device=device, tuning_metric=tuning_metric)
+    model = xRFM(device=device, tuning_metric=tuning_metric, classification_mode=classification_mode)
 
     n_samples = 2000
     n_features = 10
