@@ -1,10 +1,12 @@
+from .class_conversion import ClassificationConverter
 from .eigenpro import KernelModel
     
 import torch, numpy as np
-from torchmetrics.functional.classification import accuracy
 from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplaceKernel, LightLaplaceKernel
 from tqdm.contrib import tenumerate
-from .utils import matrix_power, SmoothClampedReLU, f1_score
+
+from .metrics import Metrics, Metric
+from .utils import matrix_power, SmoothClampedReLU
 from .gpu_utils import with_env_var
 from sklearn.metrics import roc_auc_score
 import time
@@ -79,7 +81,7 @@ class RFM(torch.nn.Module):
 
     def __init__(self, kernel: Union[Kernel, str], iters=5, bandwidth=10., exponent=1., bandwidth_mode='constant', 
                  agop_power=0.5, device=None, diag=False, verbose=True, mem_gb=None, tuning_metric='mse', 
-                 categorical_info=None, fast_categorical=True):
+                 categorical_info=None, fast_categorical=True, class_converter=None, time_limit_s=None):
         """
         Parameters
         ----------
@@ -127,6 +129,7 @@ class RFM(torch.nn.Module):
         tuning_metric : str, default='mse'
             Metric for model selection and early stopping. Options:
             - 'mse': Mean squared error (for regression)
+            - 'mae': Mean absolute error (for regression)
             - 'accuracy': Classification accuracy
             - 'auc': Area under ROC curve
             - 'f1': F1 score
@@ -143,6 +146,16 @@ class RFM(torch.nn.Module):
         fast_categorical : bool, default=True
             Whether to use optimized categorical feature handling.
             Only applies to ProductLaplaceKernel.
+
+        class_converter : ClassificationConverter, optional, default=None
+            A classification converter for converting between numerical representations predicted by the model
+            and classification probabilities or thresholded predictions used by the metrics.
+            Only needed for classification.
+
+        time_limit_s : float, optional
+            If specified as a float, imposes a time limit (in seconds) on the fitting process.
+            RFM will try to fit fewer iterations if that is estimated to be needed to stay below the time limit,
+            however, it will always fit at least one iteration.
         
         Attributes
         ----------
@@ -196,6 +209,8 @@ class RFM(torch.nn.Module):
         self.verbose = verbose
         self.tuning_metric = tuning_metric
         self.use_sqrtM = self.kernel_obj.use_sqrtM
+        self.class_converter = class_converter
+        self.time_limit_s = time_limit_s
         
         if categorical_info is not None and fast_categorical: 
             if isinstance(self.kernel_obj, ProductLaplaceKernel):
@@ -409,7 +424,8 @@ class RFM(torch.nn.Module):
         - Parameters are copied to avoid reference issues
         """
         # if classification and accuracy higher, or if regression and mse lower
-        maximize_metric = self.tuning_metric in ['accuracy', 'auc', 'f1', 'top_agop_vector_auc', 'top_agop_vector_pearson_r', 'top_agop_vectors_ols_auc']
+        # maximize_metric = self.tuning_metric in ['accuracy', 'auc', 'f1', 'top_agop_vector_auc', 'top_agop_vector_pearson_r', 'top_agop_vectors_ols_auc']
+        maximize_metric = Metric.from_name(self.tuning_metric).should_maximize
         if maximize_metric and current_metric > best_metric:
             best_metric = current_metric
             best_alphas = self.tensor_copy(self.weights)
@@ -779,7 +795,7 @@ class RFM(torch.nn.Module):
         self.iters = iters if iters is not None else self.iters
         self.ep_epochs = ep_epochs
         self.tuning_metric = tuning_metric if tuning_metric is not None else self.tuning_metric
-        self.minimize = self.tuning_metric in ['mse']
+        self.minimize = not Metric.from_name(self.tuning_metric).should_maximize
         self.early_stop_rfm = early_stop_rfm
         self.early_stop_multiplier = early_stop_multiplier
         self.center_grads = center_grads
@@ -788,40 +804,14 @@ class RFM(torch.nn.Module):
 
     def _compute_validation_metrics(self, X_train, y_train, X_val, y_val, iteration_num=None, is_final=False, **kwargs):
         """Compute validation metrics based on tuning_metric."""
-        if self.tuning_metric == 'accuracy':
-            val_metrics = self.score(X_val, y_val, metrics=['accuracy'])
-            if self.verbose:
-                prefix = "Final" if is_final else f"Round {iteration_num}"
-                print(f"{prefix} Val Acc: {100*val_metrics['accuracy']:.2f}%")
-        elif self.tuning_metric == 'auc':
-            val_metrics = self.score(X_val, y_val, metrics=['auc'])
-            if self.verbose:
-                prefix = "Final" if is_final else f"Round {iteration_num}"
-                print(f"{prefix} Val AUC: {val_metrics['auc']:.4f}")
-        elif self.tuning_metric == 'top_agop_vector_auc':
+
+        metric = Metric.from_name(self.tuning_metric)
+        if 'agop' in metric.required_quantities:
             self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
-            val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_auc'])
-            if self.verbose:
-                prefix = "Final" if is_final else f"Round {iteration_num}"
-                print(f"{prefix} Val Top AGOP Vector AUC: {val_metrics['top_agop_vector_auc']:.4f}")
-        elif self.tuning_metric == 'top_agop_vector_pearson_r':
-            self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
-            val_metrics = self.score(X_val, y_val, metrics=['top_agop_vector_pearson_r'])
-            if self.verbose:
-                prefix = "Final" if is_final else f"Round {iteration_num}"
-                print(f"{prefix} Val Top AGOP Vector Pearson R: {val_metrics['top_agop_vector_pearson_r']:.4f}")
-        elif self.tuning_metric == 'top_agop_vectors_ols_auc':
-            self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
-            val_metrics = self.score(X_val, y_val, metrics=['top_agop_vectors_ols_auc'])
-            if self.verbose:
-                prefix = "Final" if is_final else f"Round {iteration_num}"
-                print(f"{prefix} Val Top AGOP Vectors OLS AUC: {val_metrics['top_agop_vectors_ols_auc']:.4f}")
-        else:
-            val_metrics = self.score(X_val, y_val, metrics=['mse'])
-            if self.verbose:
-                prefix = "Final" if is_final else f"Round {iteration_num}"
-                print(f"{prefix} Val MSE: {val_metrics['mse']:.4f}")
-        
+        val_metrics = self.score(X_val, y_val, metrics=[self.tuning_metric])
+        if self.verbose:
+            prefix = "Final" if is_final else f"Round {iteration_num}"
+            print(f"{prefix} Val {metric.display_name}: {val_metrics[self.tuning_metric]:.4f}")
         return val_metrics
 
     def _should_early_stop(self, current_metric, best_metric):
@@ -843,6 +833,7 @@ class RFM(torch.nn.Module):
         :param val_data: tuple of (X, y)
         :param iters: number of iterations to run
         :param method: 'lstsq' or 'eigenpro'
+        :param reg: Regularization coefficient (higher is more regularization).
         :param classification: if True, the model will tune for (and report) accuracy, else just MSE loss
         :param verbose: if True, print progress
         :param M_batch_size: batch size over samples for AGOP computation
@@ -869,6 +860,11 @@ class RFM(torch.nn.Module):
         print(f"Fitting RFM with ntrain: {n}, d: {d}, and nval: {X_val.shape[0]}")
         print("="*70)
 
+
+        if self.class_converter is None:
+            self.class_converter = ClassificationConverter(mode='zero_one', n_classes=max(2, y_train.shape[1]))
+
+
         self.adapt_params_to_data(n, d)
         
         # Initialize tracking variables
@@ -879,8 +875,15 @@ class RFM(torch.nn.Module):
         early_stopped = False
         best_bandwidth = self.kernel_obj.bandwidth+0
 
+        start_time = time.time()
+
         # Main training loop
         for i in range(self.iters):
+            # check time limit
+            if i > 0 and self.time_limit_s is not None and (i+1)/i*(time.time()-start_time) > self.time_limit_s:
+                break  # would expect to exceed the time limit, so stop
+
+
             if callback is not None:
                 callback(iteration=i)
 
@@ -1047,8 +1050,11 @@ class RFM(torch.nn.Module):
             List of metrics to compute. Supported metrics:
             - 'accuracy': Classification accuracy
             - 'mse': Mean squared error
+            - 'mae': Mean absolute error
+            - 'brier': Brier loss (= MSE to one-hot encoded labels for classification)
+            - 'logloss': Log loss
             - 'f1': F1 score
-            - 'auc': Area under ROC curve
+            - 'auc': Area under ROC curve (one-vs-rest for multiclass)
             - 'top_agop_vector_auc': AUC using top AGOP eigenvector projection
             - 'top_agop_vector_pearson_r': Pearson correlation of targets with top AGOP eigenvector projection
             - 'top_agop_vectors_ols_auc': AUC using OLS regression on top AGOP eigenvectors
@@ -1058,88 +1064,20 @@ class RFM(torch.nn.Module):
         dict
             Dictionary mapping metric names to their computed values
         """
-        
-        out_metrics = {}
-        if 'accuracy' in metrics:
-            preds = self.predict_proba(samples.to(self.device)).to(targets.device)
-            preds_ = torch.argmax(preds,dim=-1)
-            targets_ = torch.argmax(targets,dim=-1)
-            num_classes = preds.shape[-1]
 
-            if num_classes==2:
-                out_metrics['accuracy'] = accuracy(preds_, targets_, task="binary").item()
-            else:
-                out_metrics['accuracy'] = accuracy(preds_, targets_, task="multiclass", num_classes=num_classes).item()
+        metrics = Metrics(metrics)
+        assert len(targets.shape) == 2 and targets.shape[1] >= 1
+        kwargs = dict(top_k=self.top_k, y_true_reg=targets)
+        if 'y_pred' in metrics.required_quantities:
+            kwargs['y_pred'] = self.predict(samples.to(self.device))
+        if 'y_pred_proba' in metrics.required_quantities:
+            kwargs['y_pred_proba'] = self.predict_proba(samples.to(self.device))
+        if 'agop' in metrics.required_quantities:
+            kwargs['agop'] = self.agop
+        if 'y_true_class' in metrics.required_quantities:
+            kwargs['y_true_class'] = self.class_converter.numerical_to_labels(targets)
 
-        if 'mse' in metrics:
-            preds = self.predict(samples.to(self.device)).to(targets.device)
-            out_metrics['mse'] = (targets - preds).pow(2).mean()
-
-        if 'f1' in metrics:
-            preds = self.predict_proba(samples.to(self.device)).to(targets.device)
-            if targets.shape[1] == 1:
-                # assume binary classification
-                targets = torch.cat([1-targets, targets], dim=1)
-            out_metrics['f1'] = f1_score(preds, targets, num_classes=preds.shape[-1]).item()
-
-        if 'auc' in metrics:
-            preds = self.predict_proba(samples.to(self.device))
-            if targets.shape[1] == 1:
-                # assume binary classification
-                targets = torch.cat([1-targets, targets], dim=1)
-            out_metrics['auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
-
-        if 'top_agop_vector_auc' in metrics:
-            assert len(targets.shape)==1 or targets.shape[1]==1, "Top AGOP Vector AUC is only defined for binary classification"
-            _, U = torch.lobpcg(self.agop, k=1)
-            top_eigenvector = U[:, 0]
-            projections = samples @ top_eigenvector
-            projections = projections.reshape(targets.shape)
-            plus_auc = roc_auc_score(targets.cpu().numpy(), torch.sigmoid(projections).cpu().numpy())
-            minus_auc = roc_auc_score(targets.cpu().numpy(), torch.sigmoid(-projections).cpu().numpy())
-            out_metrics['top_agop_vector_auc'] = max(plus_auc, minus_auc)
-
-        if 'top_agop_vector_pearson_r' in metrics:
-            assert len(targets.shape)==1 or targets.shape[1]==1, "Top AGOP Vector Pearson R is only defined for binary classification"
-            _, U = torch.lobpcg(self.agop, k=1)
-            top_eigenvector = U[:, 0]
-            projections = samples @ top_eigenvector
-            projections = projections.reshape(-1, 1)
-            targets = targets.reshape(-1, 1)
-            out_metrics['top_agop_vector_pearson_r'] = torch.abs(torch.corrcoef(torch.cat((projections, targets), dim=-1).T))[0, 1].item()
-
-        if 'top_agop_vectors_ols_auc' in metrics:
-            top_k = self.top_k
-            print(f"Computing Top AGOP Vectors OLS AUC for {top_k} eigenvectors")
-            start_time = time.time()
-            _, U = torch.lobpcg(self.agop, k=top_k)
-            end_time = time.time()
-            print(f"Time taken to compute top {top_k} eigenvectors: {end_time - start_time} seconds")
-
-            
-            top_eigenvectors = U[:, :top_k]
-            projections = samples @ top_eigenvectors
-            projections = projections.reshape(-1, top_k)
-
-            start_time = time.time()
-            XtX = projections.T @ projections
-            Xty = projections.T @ targets
-            end_time = time.time()
-            print(f"Time taken to compute XtX and Xty: {end_time - start_time} seconds")
-
-            start_time = time.time()
-            betas = torch.linalg.pinv(XtX) @ Xty
-            end_time = time.time()
-            print(f"Time taken to solve OLS: {end_time - start_time} seconds")
-
-            start_time = time.time()
-            preds = torch.sigmoid(projections @ betas).reshape(targets.shape)
-            end_time = time.time()
-            print(f"Time taken to compute OLS predictions: {end_time - start_time} seconds")
-
-            out_metrics['top_agop_vectors_ols_auc'] = roc_auc_score(targets.cpu().numpy(), preds.cpu().numpy(), multi_class='ovr')
-
-        return out_metrics
+        return metrics.compute(**kwargs)
     
     @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     def predict_proba(self, samples, eps=1e-3):
@@ -1172,9 +1110,4 @@ class RFM(torch.nn.Module):
         - Inherits batch processing and device management from predict() method
         """
         predictions = self.predict(samples) 
-        if predictions.shape[1] == 1:
-            predictions = torch.cat([1-predictions, predictions], dim=1)
-        
-        predictions = torch.clamp(predictions, eps, 1-eps) # clamp predictions to [eps, 1-eps]
-        predictions /= predictions.sum(dim=1, keepdim=True) # normalize predictions to sum to 1
-        return predictions
+        return self.class_converter.numerical_to_probas(predictions, eps=eps)

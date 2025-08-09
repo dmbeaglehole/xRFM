@@ -42,6 +42,7 @@ pip install -e .
 ```python
 import torch
 from xrfm import xRFM
+from sklearn.model_selection import train_test_split
 
 # Create synthetic data
 def target_function(X):
@@ -55,15 +56,15 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = xRFM(device=device, tuning_metric='mse')
 
 # Generate data
-n_samples, n_features = 1000, 100
-X_train = torch.randn(n_samples, n_features, device=device)
-X_test = torch.randn(n_samples, n_features, device=device)
-y_train = target_function(X_train)
-y_test = target_function(X_test)
+n_samples = 2000
+n_features = 100
+X = torch.randn(n_samples, n_features, device=device)
+y = target_function(X)
+X_trainval, X_test, y_trainval, y_test = train_test_split(X, y, test_size=0.2, random_state=0)
+X_train, X_val, y_train, y_val = train_test_split(X_trainval, y_trainval, test_size=0.2, random_state=0)
 
-# Train and predict
-model.fit(X_train, y_train, X_test, y_test)
-predictions = model.predict(X_test)
+model.fit(X_train, y_train, X_val, y_val)
+y_pred_test = model.predict(X_test)
 ```
 
 ### Custom Configuration
