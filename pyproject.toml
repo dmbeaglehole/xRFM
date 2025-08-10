@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling>=1.26.1"]  # https://github.com/pypa/hatch/issues/1818
+build-backend = "hatchling.build"
+
+[project]
+name = "xrfm"
+dynamic = ["version"]
+description = 'xRFM: Scalable and interpretable kernel methods for tabular data'
+readme = "README.md"
+requires-python = ">=3.7"
+license = "MIT"
+keywords = ['tabular data', 'scikit-learn', 'machine learning', 'feature machine', 'recursive', 'tree-based']
+authors = [
+    { name = "Daniel Beaglehole", email = "dbeaglehole@ucsd.edu" },
+    { name = "David Holzmüller" }, #, email = "a@b.org" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+    "torch>=1.8.0",
+    "numpy>=1.19.0",
+    "scikit-learn>=0.24.0",
+    "tqdm>=4.60.0",
+]
+
+[tool.hatch.version]
+path = "xrfm/__about__.py"
+
+[tool.hatch.envs.default]
+installer = "uv"
+features = []
+
+[tool.hatch.envs.hatch-test]
+installer = "uv"
+features = []
+
+[tool.hatch.build.targets.sdist]
+package = ['xrfm']
+only-include = ['xrfm']
+
+[tool.hatch.build.targets.wheel]
+package = ['xrfm']
+only-include = ['xrfm']
+
+[project.urls]
+Documentation = "https://github.com/dmbeaglehole/xrfm#readme"
+Issues = "https://github.com/dmbeaglehole/xrfm/issues"
+Source = "https://github.com/dmbeaglehole/xrfm"
+
+[tool.hatch.envs.types]
+extra-dependencies = [
+    "mypy>=1.0.0",
+]
+[tool.hatch.envs.types.scripts]
+check = "mypy --install-types --non-interactive {args:xrfm tests}"
+
+[tool.coverage.run]
+source_pkgs = ["xrfm", "tests"]
+branch = true
+parallel = true
+omit = [
+    "xrfm/__about__.py",
+]
