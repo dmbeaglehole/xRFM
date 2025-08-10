@@ -1,4 +1,4 @@
 from .xrfm import xRFM, RFM
+from .__about__ import __version__
 
-__version__ = "0.1.0"
-__all__ = ["xRFM", "RFM"] 
+__all__ = ["xRFM", "RFM"]
