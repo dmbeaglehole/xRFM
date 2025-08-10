@@ -3,14 +3,13 @@ import time
 
 import numpy as np
 import torch
-from sklearn.base import ClassifierMixin, BaseEstimator, RegressorMixin
 
 from xrfm.rfm_src import RFM, matrix_power
 from tqdm import tqdm
 import copy
 
 from .rfm_src.class_conversion import ClassificationConverter
-from .rfm_src.metrics import Metrics, Metric
+from .rfm_src.metrics import Metric
 from .tree_utils import get_param_tree
 
 
