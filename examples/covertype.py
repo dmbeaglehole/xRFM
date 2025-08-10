@@ -3,11 +3,6 @@ import torch
 
 from xrfm import xRFM
 
-import sys
-sys.path.insert(0, '/u/dbeaglehole/tabrfm')
-from tabrfm.experimental.rp_rfm import RP_RFM
-
-
 import time
 from sklearn.datasets import fetch_covtype
 from sklearn.model_selection import train_test_split
@@ -103,18 +98,4 @@ end_time = time.time()
 y_pred = xrfm_model.predict_proba(X_test)
 acc = accuracy(y_pred, y_test)
 print(f'xRFM time: {end_time-start_time:g} s, acc: {acc:g}')
-print('-'*150)
-
-rfm_params = {**xrfm_params['model'], **xrfm_params['fit']}
-rp_rfm_model = RP_RFM(rfm_params, device=DEVICE, min_subset_size=min_subset_size, 
-                      tuning_metric='accuracy', n_tree_iters=0, n_trees=1,
-                      split_method='top_vector_agop_on_subset')
-
-start_time = time.time()
-rp_rfm_model.fit(X_train, y_train, X_test, y_test)
-end_time = time.time()
-
-y_pred = xrfm_model.predict_proba(X_test)
-acc = accuracy(y_pred, y_test)
-print(f'RP-RFM time: {end_time-start_time:g} s, acc: {acc:g}')
 print('-'*150)
