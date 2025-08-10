@@ -28,11 +28,26 @@ jobs:
       - name: Build sdist and wheel
         run: python -m build
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.12.2
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
-          verify-metadata: false
-          # Uncomment to test on TestPyPI first
-          # repository-url: https://test.pypi.org/legacy/
+      - name: Inspect wheel metadata
+        run: |
+          python - << 'PY'
+          import zipfile, glob
+          for p in glob.glob('dist/*.whl'):
+              print('Inspecting', p)
+              with zipfile.ZipFile(p) as z:
+                  meta = [n for n in z.namelist() if n.endswith('METADATA')]
+                  print('META files:', meta)
+                  if meta:
+                      data = z.read(meta[0]).decode('utf-8', errors='replace')
+                      print('\n'.join(data.splitlines()[:30]))
+          PY
+
+      - name: Upload to PyPI with twine
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+          python -m twine upload dist/*
 
