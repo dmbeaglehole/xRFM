@@ -1,5 +1,5 @@
 import pytest
-from sklearn.metrics import mean_squared_error, accuracy_score
+from sklearn.metrics import root_mean_squared_error, accuracy_score
 import torch
 from sklearn.model_selection import train_test_split
 
@@ -27,7 +27,7 @@ def test_regression(time_limit_s):
     X_train, X_val, y_train, y_val = train_test_split(X_trainval, y_trainval, test_size=0.2, random_state=0)
 
     model.fit(X_train, y_train, X_val, y_val)
-    rmse = mean_squared_error(y_test, model.predict(X_test), squared=False)
+    rmse = root_mean_squared_error(y_test, model.predict(X_test))
     if rmse > 0.3:
         raise AssertionError(f'RMSE was too large: {rmse:g} is larger than 0.3')
 
