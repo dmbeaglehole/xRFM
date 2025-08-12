@@ -24,7 +24,7 @@ xRFM/
 ## Installation
 
 ```bash
-pip install git+https://github.com/dmbeaglehole/xRFM.git
+pip install xrfm
 ```
 
 ### Development Installation
