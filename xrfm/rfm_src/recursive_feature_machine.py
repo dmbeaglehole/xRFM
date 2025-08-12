@@ -6,9 +6,8 @@ from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplac
 from tqdm.contrib import tenumerate
 
 from .metrics import Metrics, Metric
-from .utils import matrix_power, SmoothClampedReLU
+from .utils import matrix_power
 from .gpu_utils import with_env_var
-from sklearn.metrics import roc_auc_score
 import time
 from typing import Union
 
