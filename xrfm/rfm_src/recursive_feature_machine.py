@@ -2,7 +2,7 @@ from .class_conversion import ClassificationConverter
 from .eigenpro import KernelModel
     
 import torch, numpy as np
-from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplaceKernel, LightLaplaceKernel
+from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplaceKernel, LightLaplaceKernel, KermacProductLaplaceKernel
 from tqdm.contrib import tenumerate
 
 from .metrics import Metrics, Metric
@@ -283,6 +283,8 @@ class RFM(torch.nn.Module):
             return ProductLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         elif kernel_str in ['sum_power_laplace', 'l1_power']:
             return SumPowerLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
+        elif kernel_str in ['kermac_product_laplace', 'l1_kermac']:
+            return KermacProductLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         else:
             raise ValueError(f"Invalid kernel: {kernel_str}")
         
@@ -801,12 +803,12 @@ class RFM(torch.nn.Module):
         self.top_k = kwargs.get('top_k', None)
         assert 'diag' not in kwargs, "diag should be set in the constructor"
 
-    def _compute_validation_metrics(self, X_train, y_train, X_val, y_val, iteration_num=None, is_final=False, **kwargs):
+    def _compute_validation_metrics(self, X_train, y_train, X_val, y_val, iteration_num=None, is_final=False, M_batch_size=None, **kwargs):
         """Compute validation metrics based on tuning_metric."""
 
         metric = Metric.from_name(self.tuning_metric)
         if 'agop' in metric.required_quantities:
-            self.agop = self.fit_M(X_train, y_train, inplace=False, **kwargs)
+            self.agop = self.fit_M(X_train, y_train, M_batch_size=M_batch_size, inplace=False, **kwargs)
         val_metrics = self.score(X_val, y_val, metrics=[self.tuning_metric])
         if self.verbose:
             prefix = "Final" if is_final else f"Round {iteration_num}"
@@ -892,7 +894,7 @@ class RFM(torch.nn.Module):
                                **kwargs)
                         
             # Compute validation metrics
-            val_metrics = self._compute_validation_metrics(X_train, y_train, X_val, y_val, iteration_num=i, **kwargs)
+            val_metrics = self._compute_validation_metrics(X_train, y_train, X_val, y_val, iteration_num=i, M_batch_size=M_batch_size, **kwargs)
 
             # Update best parameters if needed
             if return_best_params:
@@ -906,12 +908,12 @@ class RFM(torch.nn.Module):
                 if self._should_early_stop(val_metric, best_metric):
                     print(f"Early stopping at iteration {i}")
                     if not return_best_params:
-                        self.fit_M(X_train, y_train.shape[-1], **kwargs)
+                        self.fit_M(X_train, y_train.shape[-1], M_batch_size=M_batch_size, **kwargs)
                     early_stopped = True
                     break
 
             # Fit M matrix and cleanup
-            self.fit_M(X_train, y_train.shape[-1], **kwargs)
+            self.fit_M(X_train, y_train.shape[-1], M_batch_size=M_batch_size, **kwargs)
             del self.weights
             
             if return_Ms:
@@ -947,7 +949,7 @@ class RFM(torch.nn.Module):
 
         if kwargs.get('get_agop_best_model', False):
             # fit AGOP of best model
-            self.agop_best_model = self.fit_M(X_train, y_train, inplace=False, **kwargs)
+            self.agop_best_model = self.fit_M(X_train, y_train, M_batch_size=M_batch_size, inplace=False, **kwargs)
 
         return Ms if return_Ms else None
     

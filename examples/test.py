@@ -1,8 +1,6 @@
 import numpy as np
 import torch
 
-import sys
-sys.path.append('../xrfm')
 from xrfm import xRFM
 
 import time
@@ -18,15 +16,15 @@ def fstar(X):
 def mse_loss(y_pred, y_true):
     return (y_pred - y_true).pow(2).mean()
 
-n = 2_000 # samples
-ntest = 2_000
-d = 50  # dimension
+n = 20_000 # samples
+ntest = 20_000
+d = 1000  # dimension
 
-bw = 8.516821304578539
-reg = 5.438790710761095e-05
+bw = 10
+reg = 1e-3
 iters = 5
-min_subset_size = 2000
-exponent = 1.0385674510481542
+min_subset_size = 20_000
+exponent = 1.0
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -40,7 +38,7 @@ y_test = fstar(X_test).to(DEVICE)
 
 xrfm_params = {
     'model': {
-        'kernel': "l2",
+        'kernel': "l2", #l1_kermac", #"l1_kermac",
         'bandwidth': bw,
         'exponent': exponent,
         'diag': False,
@@ -49,7 +47,7 @@ xrfm_params = {
     'fit': {
         'reg': reg,
         'iters': iters,
-        'M_batch_size': len(X_train),
+        'M_batch_size': 500,
         'verbose': False,
         'early_stop_rfm': True,
     }
@@ -63,7 +61,7 @@ start_time = time.time()
 xrfm_model.fit(X_train, y_train, X_test, y_test)
 end_time = time.time()
 
-y_pred = xrfm_model.predict(X_test)
+y_pred = torch.from_numpy(xrfm_model.predict(X_test.detach().cpu().numpy())).to(DEVICE)
 loss = mse_loss(y_pred, y_test)
 print(f'xRFM time: {end_time-start_time:g} s, loss: {loss.item():g}')
 print('-'*150)

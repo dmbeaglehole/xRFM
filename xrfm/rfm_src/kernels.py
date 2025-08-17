@@ -1,11 +1,7 @@
 from typing import Optional, Union
 
 import torch
-from tqdm import tqdm
-import time
-from typing import List
-
-import torch.nn.functional as F
+import kermac
 
 def get_sub_matrix(mat: Union[torch.Tensor, None], indices: torch.Tensor) -> Union[torch.Tensor, None]:
     """
@@ -468,10 +464,48 @@ class SumPowerLaplaceKernel(Kernel):
 
         return torch.func.jacrev(forward_func)(z)
 
+class KermacProductLaplaceKernel(Kernel):
+    def __init__(self, bandwidth: float, exponent: float, eps: float = 1e-8, bandwidth_mode: str = 'constant'):
+        super().__init__()
+        assert bandwidth > 0
+        assert 0 < exponent <= 2
+        assert eps > 0
+        self.bandwidth = bandwidth
+        self.base_bandwidth = bandwidth
+        self.exponent = exponent
+        self.eps = eps  # this one is for numerical stability
+        self.bandwidth_mode = bandwidth_mode
+
+    def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None, 
+                                mask_identical_points: bool = False) -> torch.Tensor:
+        kernel_mat = kermac.cdist(self._transform_m(x, mat), self._transform_m(z, mat), p=self.exponent).squeeze(0)
+        kernel_mat.clamp_(min=0)
+        if not self.is_adaptive_bandwidth:
+            self._adapt_bandwidth(kernel_mat)
+
+        if mask_identical_points:
+            mask = torch.abs(kernel_mat) > self.eps
+
+        kernel_mat.pow_(self.exponent)
+        kernel_mat.mul_(-1./(self.bandwidth**self.exponent))
+        kernel_mat.exp_()
+
+        if mask_identical_points:
+            kernel_mat = kernel_mat * mask
+
+        return kernel_mat
+
+    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
+        kernel_mat = self._get_kernel_matrix_impl(x, z, mask_identical_points=True)
+        x = x.T.contiguous()
+        z = z.T.contiguous()
+        out = kermac.cdist_grad(kernel_mat, x, coefs, z, p=self.exponent)
+        return out.transpose(-2, -1)
+    
 
 if __name__ == '__main__':
     # kernel = LaplaceKernel(bandwidth=2.0, exponent=1.0)
-    kernel = ProductLaplaceKernel(bandwidth=2.0, exponent=1.2)
+    kernel = KermacProductLaplaceKernel(bandwidth=2.0, exponent=1.2)
 
     n_samples = 2000
     n_features = 100
