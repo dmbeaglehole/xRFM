@@ -1,7 +1,11 @@
 from typing import Optional, Union
 
 import torch
-import kermac
+
+try:
+    import kermac
+except ImportError:
+    kermac = None
 
 def get_sub_matrix(mat: Union[torch.Tensor, None], indices: torch.Tensor) -> Union[torch.Tensor, None]:
     """
@@ -475,6 +479,9 @@ class KermacProductLaplaceKernel(Kernel):
         self.exponent = exponent
         self.eps = eps  # this one is for numerical stability
         self.bandwidth_mode = bandwidth_mode
+
+        if kermac is None:
+            raise ImportError("kermac is required for KermacProductLaplaceKernel.")
 
     def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None, 
                                 mask_identical_points: bool = False) -> torch.Tensor:

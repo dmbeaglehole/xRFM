@@ -55,6 +55,15 @@ Documentation = "https://github.com/dmbeaglehole/xrfm#readme"
 Issues = "https://github.com/dmbeaglehole/xrfm/issues"
 Source = "https://github.com/dmbeaglehole/xrfm"
 
+[project.optional-dependencies]
+cu11 = [
+    "kermac[cu11] @ git+https://github.com/Kernel-Machines/kermac.git"
+]
+cu12 = [
+    "kermac[cu12] @ git+https://github.com/Kernel-Machines/kermac.git"
+]
+
+
 [tool.hatch.envs.types]
 extra-dependencies = [
     "mypy>=1.0.0",
