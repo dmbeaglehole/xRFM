@@ -1,5 +1,6 @@
 import sys
 import time
+import random
 
 import numpy as np
 import torch
@@ -109,7 +110,9 @@ class xRFM:
                  max_depth=None, device=None, n_trees=1, n_tree_iters=0,
                  split_method='top_vector_agop_on_subset', tuning_metric=None,
                  categorical_info=None, default_rfm_params=None,
-                 fixed_vector=None, callback=None, classification_mode='zero_one', time_limit_s=None, n_threads=None):
+                 fixed_vector=None, callback=None, classification_mode='zero_one', 
+                 time_limit_s=None, n_threads=None, refill_size=1500, random_state=None, 
+                 **kwargs):
         self.min_subset_size = min_subset_size
         self.rfm_params = rfm_params
         self.max_depth = max_depth
@@ -129,8 +132,14 @@ class xRFM:
         self.time_limit_s = time_limit_s
         self.n_threads = n_threads
 
+        if random_state is not None:
+            random.seed(random_state)
+            np.random.seed(random_state)
+            torch.manual_seed(random_state)
+            torch.cuda.manual_seed(random_state)
+
         # parameters for refilling the validation set at leaves
-        self.min_val_size = 1500
+        self.min_val_size = refill_size
         self.val_size_frac = 0.2
 
         # default parameters for the split direction model
@@ -681,6 +690,9 @@ class xRFM:
         if not isinstance(X_val, torch.Tensor):
             X_val = torch.tensor(X_val, dtype=torch.float32, device=self.device)
 
+        X = X.to(self.device)
+        X_val = X_val.to(self.device)
+
         y = torch.as_tensor(y).to(self.device)
         y_val = torch.as_tensor(y_val).to(self.device)
         y_train_and_val = torch.cat([y, y_val], dim=0)
@@ -843,6 +855,7 @@ class xRFM:
         # Convert to torch tensor if needed
         if not isinstance(X, torch.Tensor):
             X = torch.tensor(X, dtype=torch.float32, device=self.device)
+        X = X.to(self.device)
 
         all_predictions = []
 

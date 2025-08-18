@@ -50,6 +50,9 @@ only-include = ['xrfm']
 package = ['xrfm']
 only-include = ['xrfm']
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [project.urls]
 Documentation = "https://github.com/dmbeaglehole/xrfm#readme"
 Issues = "https://github.com/dmbeaglehole/xrfm/issues"

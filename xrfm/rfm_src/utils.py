@@ -56,6 +56,15 @@ def stable_matrix_power(M, power):
     """
     if len(M.shape) == 2:
         assert M.shape[0] == M.shape[1], "Matrix must be square"
+
+        # Handle NaNs
+        if torch.isnan(M).any():
+            M = torch.nan_to_num(M, nan=0.0, posinf=1e12, neginf=-1e12)
+            # Optional: scale to a reasonable magnitude
+            scale = M.abs().max()
+            if scale > 0:
+                M = M / scale
+
         if M.shape[0] < 700:
             M_cpu = M.cpu().float()
             M_cpu.diagonal().add_(1e-8)

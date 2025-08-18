@@ -16,14 +16,14 @@ def fstar(X):
 def mse_loss(y_pred, y_true):
     return (y_pred - y_true).pow(2).mean()
 
-n = 20_000 # samples
-ntest = 20_000
+n = 5_000 # samples
+ntest = 5_000
 d = 1000  # dimension
 
 bw = 10
 reg = 1e-3
 iters = 5
-min_subset_size = 20_000
+min_subset_size = 5_000
 exponent = 1.0
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -38,7 +38,7 @@ y_test = fstar(X_test).to(DEVICE)
 
 xrfm_params = {
     'model': {
-        'kernel': "l2", #l1_kermac", #"l1_kermac",
+        'kernel': "l1_kermac", #l1_kermac", #"l1_kermac",
         'bandwidth': bw,
         'exponent': exponent,
         'diag': False,
