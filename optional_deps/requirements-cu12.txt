@@ -1,0 +1,1 @@
+kermac[cu12] @ git+https://github.com/Kernel-Machines/kermac.git
