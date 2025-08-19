@@ -31,6 +31,10 @@ dependencies = [
     "tqdm>=4.60.0",
 ]
 
+[project.optional-dependencies]
+cu11 = ["kermac[cu11]"]
+cu12 = ["kermac[cu12]"]
+
 [tool.hatch.version]
 path = "xrfm/__about__.py"
 
