@@ -159,6 +159,7 @@ Base Recursive Feature Machine implementation.
 | `LightLaplaceKernel` | `'l2_high_dim'`, `'l2_light'` | Memory-efficient Laplace kernel |
 | `ProductLaplaceKernel` | `'product_laplace'`, `'l1'` | Product of Laplace kernels |
 | `SumPowerLaplaceKernel` | `'sum_power_laplace'`, `'l1_power'` | Sum of powered Laplace kernels |
+| `KermacProductLaplaceKernel` | `'l1_kermac'` | High-performance Product of Laplace kernels (requires install with `[cu11]` or `[cu12]`) |
 
 ### Splitting Methods
 

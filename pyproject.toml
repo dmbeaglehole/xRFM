@@ -46,6 +46,9 @@ features = []
 installer = "uv"
 features = []
 
+[tool.hatch.publish.repos.test]
+url = "https://test.pypi.org/legacy/"
+
 [tool.hatch.build.targets.sdist]
 package = ['xrfm']
 only-include = ['xrfm']

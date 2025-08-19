@@ -1,3 +1,7 @@
+# publish script
+publish.sh
+
+
 # Ignore all files in the examples directory
 examples/california_housing.py
 examples/cat_test.py
