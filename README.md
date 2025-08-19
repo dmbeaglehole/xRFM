@@ -27,6 +27,18 @@ xRFM/
 pip install xrfm
 ```
 
+Or to use the KermacProductLaplaceKernel, with CUDA-11 or CUDA-12:
+
+```bash
+pip install xrfm[cu11]
+```
+
+or 
+
+```bash
+pip install xrfm[cu12]
+```
+
 ### Development Installation
 
 ```bash
