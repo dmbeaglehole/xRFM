@@ -543,14 +543,11 @@ class RFM(torch.nn.Module):
             print(f"Error in previous solver: {e}, re-trying with large regularization")
             
             # Gershgorin circle theorem to upper bound maximum eigenvalue
-            print(f"Max kernel entry={kernel_matrix.max()}")
-
             row_sums = kernel_matrix.abs().sum(dim=1)
             max_row_sum = row_sums.max()
             kernel_matrix.diagonal().add_(max_row_sum*1e-2) # 1% of max row eigenvalue bound 
 
             print(f"Max_row_sum={max_row_sum}")
-            print(f"New kernel matrix [:5,:5]:\n{kernel_matrix[:5,:5]}")
             out = torch.linalg.solve(kernel_matrix, targets)
         
         return out
@@ -809,7 +806,7 @@ class RFM(torch.nn.Module):
         self.iters = iters if iters is not None else self.iters
         self.ep_epochs = ep_epochs
         self.tuning_metric = tuning_metric if tuning_metric is not None else self.tuning_metric
-        self.minimize = not Metric.from_name(self.tuning_metric).should_maximize
+        self.should_minimize = not Metric.from_name(self.tuning_metric).should_maximize
         self.early_stop_rfm = early_stop_rfm
         self.early_stop_multiplier = early_stop_multiplier
         self.center_grads = center_grads
@@ -830,7 +827,7 @@ class RFM(torch.nn.Module):
 
     def _should_early_stop(self, current_metric, best_metric):
         """Check if early stopping criteria is met."""
-        if self.minimize:
+        if self.should_minimize:
             return current_metric > best_metric * self.early_stop_multiplier
         else:
             return current_metric < best_metric / self.early_stop_multiplier
@@ -884,7 +881,7 @@ class RFM(torch.nn.Module):
         # Initialize tracking variables
         metrics, Ms = [], []
         best_alphas, best_M, best_sqrtM = None, None, None
-        best_metric = float('inf') if self.tuning_metric == 'mse' else 0
+        best_metric = float('inf') if self.should_minimize else float('-inf')
         best_iter = None
         early_stopped = False
         best_bandwidth = self.kernel_obj.bandwidth+0

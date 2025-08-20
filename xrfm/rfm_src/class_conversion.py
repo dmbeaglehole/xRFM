@@ -65,8 +65,8 @@ class ClassificationConverter:
         """
         if self.mode == 'zero_one':
             if self.n_classes == 2:
-                return labels.float().unsqueeze(-1)
-            return F.one_hot(labels, num_classes=self.n_classes).float()
+                return labels.float().reshape(-1, 1)
+            return F.one_hot(labels.long().squeeze(-1), num_classes=self.n_classes).float()
 
         # prevalence
         C = self._C.to(labels.device)
