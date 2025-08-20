@@ -529,16 +529,23 @@ class RFM(torch.nn.Module):
             kernel_matrix.diagonal().add_(self.reg)
         
         
-        if solver == 'solve':
+        try:
+            if solver == 'solve':
+                out = torch.linalg.solve(kernel_matrix, targets)
+            elif solver == 'cholesky':
+                L = torch.linalg.cholesky(kernel_matrix, out=kernel_matrix)
+                out = torch.cholesky_solve(targets, L)
+            elif solver == 'lu':
+                P, L, U = torch.linalg.lu(kernel_matrix)
+                out = torch.linalg.lu_solve(P, L, U, targets)
+        except Exception as e:
+            print(f"Error in previous solver: {e}, re-trying with large regularization")
+            
+            # Gershgorin circle theorem to upper bound maximum eigenvalue
+            row_sums = kernel_matrix.abs().sum(dim=1)
+            max_row_sum = row_sums.max()
+            kernel_matrix.diagonal().add_(max_row_sum*1e-2) # 1% of max row eigenvalue bound 
             out = torch.linalg.solve(kernel_matrix, targets)
-        elif solver == 'cholesky':
-            L = torch.linalg.cholesky(kernel_matrix, out=kernel_matrix)
-            out = torch.cholesky_solve(targets, L)
-        elif solver == 'lu':
-            P, L, U = torch.linalg.lu(kernel_matrix)
-            out = torch.linalg.lu_solve(P, L, U, targets)
-        else:
-            raise ValueError(f"Invalid solver: {solver}")
         
         return out
 
