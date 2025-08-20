@@ -911,7 +911,7 @@ class xRFM:
         if self.n_threads is not None:
             torch.set_num_threads(old_n_threads)
 
-        return result
+        return result.cpu().numpy()
 
 
     def _predict_tree(self, X, tree, proba=False):

@@ -25,7 +25,7 @@ class ClassificationConverter:
         if self.mode == 'prevalence':
             if labels is None:
                 raise ValueError("labels must be provided for mode='prevalence'.")
-            counts = torch.bincount(labels.cpu().long(), minlength=n_classes).float()
+            counts = torch.bincount(labels.cpu().long().squeeze(-1), minlength=n_classes).float()
             total = counts.sum()
             if total.item() == 0:
                 raise ValueError("labels must contain at least one element for mode='prevalence'.")
@@ -70,7 +70,7 @@ class ClassificationConverter:
 
         # prevalence
         C = self._C.to(labels.device)
-        return C[labels.long()]  # (N, K-1)
+        return C[labels.long().squeeze(-1)]  # (N, K-1)
 
     def numerical_to_probas(self, num: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
         """

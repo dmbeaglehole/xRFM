@@ -58,7 +58,12 @@ def stable_matrix_power(M, power):
         assert M.shape[0] == M.shape[1], "Matrix must be square"
 
         # Handle NaNs
+        if torch.isnan(M).all():
+            print("All NaNs in matrix, returning identity")
+            return torch.eye(M.shape[0], device=M.device, dtype=M.dtype)
+
         if torch.isnan(M).any():
+            print("Some NaNs in matrix, replacing with 0")
             M = torch.nan_to_num(M, nan=0.0, posinf=1e12, neginf=-1e12)
             # Optional: scale to a reasonable magnitude
             scale = M.abs().max()
@@ -78,6 +83,19 @@ def stable_matrix_power(M, power):
             return (U @ torch.diag(S**power) @ U.T).to(device=M.device, dtype=M.dtype)
 
     elif len(M.shape) == 1:
+        # Handle NaNs
+        if torch.isnan(M).all():
+            print("All NaNs in vector, returning all ones")
+            return torch.ones(M.shape[0], device=M.device, dtype=M.dtype)
+
+        if torch.isnan(M).any():
+            print("Some NaNs in vector, replacing with 0")
+            M = torch.nan_to_num(M, nan=0.0, posinf=1e12, neginf=-1e12)
+            # Optional: scale to a reasonable magnitude
+            scale = M.abs().max()
+            if scale > 0:
+                M = M / scale
+
         assert M.shape[0] > 0, "Vector must be non-empty"
         M[M<0] = 0.
         return M**power

@@ -523,6 +523,7 @@ class RFM(torch.nn.Module):
             centers = centers.to(self.device)
             targets = targets.to(self.device)
 
+
         kernel_matrix = self.kernel(centers, centers)    
 
         if self.reg > 0:
@@ -542,9 +543,14 @@ class RFM(torch.nn.Module):
             print(f"Error in previous solver: {e}, re-trying with large regularization")
             
             # Gershgorin circle theorem to upper bound maximum eigenvalue
+            print(f"Max kernel entry={kernel_matrix.max()}")
+
             row_sums = kernel_matrix.abs().sum(dim=1)
             max_row_sum = row_sums.max()
             kernel_matrix.diagonal().add_(max_row_sum*1e-2) # 1% of max row eigenvalue bound 
+
+            print(f"Max_row_sum={max_row_sum}")
+            print(f"New kernel matrix [:5,:5]:\n{kernel_matrix[:5,:5]}")
             out = torch.linalg.solve(kernel_matrix, targets)
         
         return out
