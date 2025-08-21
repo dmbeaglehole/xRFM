@@ -42,13 +42,13 @@ xrfm_params = {
         'bandwidth': bw,
         'exponent': exponent,
         'diag': False,
-        'bandwidth_mode': "constant"
+        'bandwidth_mode': "adaptive"
     },
     'fit': {
         'reg': reg,
         'iters': iters,
         'M_batch_size': 500,
-        'verbose': False,
+        'verbose': True,
         'early_stop_rfm': True,
     }
 }

@@ -53,6 +53,9 @@ class Kernel:
         return
 
     def _adapt_bandwidth(self, kernel_mat: torch.Tensor, adapt_mode='median', sub_mat_size=5000):
+        """
+        Input is distance matrix with entries D(x,z)^p for exponent p.
+        """
         n, m = kernel_mat.shape
         assert n <= m, "Kernel matrix must be wider than it is tall"
 
@@ -60,6 +63,10 @@ class Kernel:
         sub_mat_size = min(sub_mat_size, n)
         sample_indices = torch.randperm(n)[:sub_mat_size]
         sample_matrix = kernel_mat[sample_indices][:, sample_indices]
+
+        # We need to take element-wise root of entries
+        if self.exponent != 1.0:
+            sample_matrix = sample_matrix**(1/self.exponent)
 
         # mask for off-diagonal elements
         mask = ~torch.eye(sub_mat_size, dtype=bool, device=kernel_mat.device)
@@ -200,10 +207,12 @@ class LightLaplaceKernel(Kernel):
         kernel_mat.clamp_(min=0)
         kernel_mat.sqrt_()
 
-        if not self.is_adaptive_bandwidth:
-            self._adapt_bandwidth(kernel_mat)
         if self.exponent != 1.0:
             kernel_mat.pow_(self.exponent)
+            
+        if not self.is_adaptive_bandwidth:
+            self._adapt_bandwidth(kernel_mat)
+        
 
         kernel_mat.mul_(-1. / (self.bandwidth ** self.exponent))
         kernel_mat.exp_()
@@ -249,13 +258,24 @@ class LaplaceKernel(Kernel):
         self.exponent = exponent
         self.eps = eps  # this one is for numerical stability
 
+    def get_sample_batch_size(self, n: int, d: int, scalar_size: int = 4, mem_constant: float = 20) -> int:
+        if torch.cuda.is_available():
+            total_memory_possible = torch.cuda.get_device_properties(torch.device('cuda')).total_memory
+            curr_mem_use = torch.cuda.memory_allocated()
+            available_memory = total_memory_possible - curr_mem_use
+            return int(available_memory / (mem_constant*n*scalar_size))
+        else:
+            # hard code here
+            return 5_000
+
     def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
         kernel_mat = torch.cdist(self._transform_m(x, mat), self._transform_m(z, mat))
         kernel_mat.clamp_(min=0)
-        if not self.is_adaptive_bandwidth:
-            self._adapt_bandwidth(kernel_mat)
         if self.exponent != 1.0:
             kernel_mat.pow_(self.exponent)
+
+        if not self.is_adaptive_bandwidth:
+            self._adapt_bandwidth(kernel_mat)
 
         kernel_mat.mul_(-1. / (self.bandwidth ** self.exponent))
         kernel_mat.exp_()
@@ -272,8 +292,6 @@ class LaplaceKernel(Kernel):
         def squared_dist_fn(x, z):
             kernel_mat = torch.cdist(x, z)**2
             kernel_mat.clamp_(min=0)
-            if not self.is_adaptive_bandwidth:
-                self._adapt_bandwidth(kernel_mat)
             return kernel_mat
 
         
@@ -285,8 +303,9 @@ class LaplaceKernel(Kernel):
         dist_mat = squared_dist_fn(xnum, znum)
 
         # Add to running total of squared distances for categorical features
-        for cat_idx, cat_vecs in zip(categorical_indices, categorical_vectors):
-
+        batch_size = self.get_sample_batch_size(znum.shape[0], znum.shape[1])
+        for i, (cat_idx, cat_vecs) in enumerate(zip(categorical_indices, categorical_vectors)):
+            print(f"{i+1} of {len(categorical_indices)}")
             x_cat = x[:, cat_idx].argmax(dim=-1)
             z_cat = z[:, cat_idx].argmax(dim=-1)
 
@@ -296,13 +315,17 @@ class LaplaceKernel(Kernel):
             cat_embedding_kernel = squared_dist_fn(cat_vecs_transformed, cat_vecs_transformed)
 
             # Index into the kernel matrix using the categorical indices
-            dist_mat.add_(cat_embedding_kernel[x_cat[:, None], z_cat[None, :]])
+            for i in range(0, x.shape[0], batch_size):
+                dist_mat[i:i+batch_size].add_(cat_embedding_kernel[x_cat[i:i+batch_size, None], z_cat[None, :]])
 
         # Take square root of squared distances to get 2-norm distances -> ||x-z||_2
         dist_mat.sqrt_()
 
         # Apply exponent -> ||x-z||^p_2
         dist_mat.pow_(self.exponent)
+
+        if not self.is_adaptive_bandwidth:
+            self._adapt_bandwidth(dist_mat)
 
         # Apply bandwidth and exponent -> exp(-||x-z||^p_2 / L^p)
         dist_mat.mul_(-1./(self.bandwidth**self.exponent))
@@ -363,9 +386,11 @@ class ProductLaplaceKernel(Kernel):
                 kernel_mat[i:i+kernel_batch_size] = torch.cdist(self._transform_m(x[i:i+kernel_batch_size], mat), self._transform_m(z, mat), p=self.exponent)
 
         kernel_mat.clamp_(min=0)
+
+        kernel_mat.pow_(self.exponent)
         if not self.is_adaptive_bandwidth:
             self._adapt_bandwidth(kernel_mat)
-        kernel_mat.pow_(self.exponent)
+
         kernel_mat.mul_(-1./(self.bandwidth**self.exponent))
         kernel_mat.exp_()
         return kernel_mat
@@ -381,23 +406,20 @@ class ProductLaplaceKernel(Kernel):
         def dist_fn(x, z):
             kernel_mat = torch.cdist(x, z, p=self.exponent)
             kernel_mat.clamp_(min=0)
-            if not self.is_adaptive_bandwidth:
-                self._adapt_bandwidth(kernel_mat)
             if self.exponent != 1.0:
                 kernel_mat.pow_(self.exponent)
             return kernel_mat
-
         
         mat_num = get_sub_matrix(mat, numerical_indices)
         xnum = self._transform_m(x[:, numerical_indices], mat_num)
         znum = self._transform_m(z[:, numerical_indices], mat_num)
 
         batch_size = self.get_sample_batch_size(znum.shape[0], znum.shape[1])
-        dist_mat = torch.zeros((xnum.shape[0], znum.shape[0]), device=xnum.device, dtype=xnum.dtype)
+        kernel_mat = torch.zeros((xnum.shape[0], znum.shape[0]), device=xnum.device, dtype=xnum.dtype)
         num_batch_size = 2*batch_size
 
         for i in range(0, xnum.shape[0], num_batch_size):
-            dist_mat[i:i+num_batch_size, :] = dist_fn(xnum[i:i+num_batch_size], znum)
+            kernel_mat[i:i+num_batch_size, :] = dist_fn(xnum[i:i+num_batch_size], znum)
         for cat_idx, cat_vecs in zip(categorical_indices, categorical_vectors):
 
             x_cat = x[:, cat_idx].argmax(dim=-1)
@@ -410,11 +432,14 @@ class ProductLaplaceKernel(Kernel):
 
             # Index into the kernel matrix using the categorical indices
             for i in range(0, x.shape[0], batch_size):
-                dist_mat[i:i+batch_size].add_(cat_embedding_kernel[x_cat[i:i+batch_size, None], z_cat[None, :]])
+                kernel_mat[i:i+batch_size].add_(cat_embedding_kernel[x_cat[i:i+batch_size, None], z_cat[None, :]])
 
-        dist_mat.mul_(-1./(self.bandwidth**self.exponent))
-        dist_mat.exp_()
-        return dist_mat
+        if not self.is_adaptive_bandwidth:
+            self._adapt_bandwidth(kernel_mat)
+
+        kernel_mat.mul_(-1./(self.bandwidth**self.exponent))
+        kernel_mat.exp_()
+        return kernel_mat
 
     def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
         def forward_func(z):
@@ -436,35 +461,37 @@ class LpqLaplaceKernel(Kernel):
         self.bandwidth = bandwidth
         self.base_bandwidth = bandwidth
         self.p = p
-        self.q = q
+        self.exponent = q
         self.eps = eps  # this one is for numerical stability
         self.bandwidth_mode = bandwidth_mode
 
     def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         if self.p == 2:
             # faster implementation
-            kernel = LaplaceKernel(bandwidth=self.bandwidth, exponent=self.q, eps=self.eps, bandwidth_mode=self.bandwidth_mode)
+            kernel = LaplaceKernel(bandwidth=self.bandwidth, exponent=self.exponent, eps=self.eps, bandwidth_mode=self.bandwidth_mode)
             return kernel.get_kernel_matrix(x, z)
 
         kernel_mat = torch.cdist(x, z, p=self.p)
         kernel_mat.clamp_(min=0)
+        
+        kernel_mat.pow_(self.exponent)
         if not self.is_adaptive_bandwidth:
             self._adapt_bandwidth(kernel_mat)
-        kernel_mat.pow_(self.q)
-        kernel_mat.mul_(-1. / (self.bandwidth ** self.q))
+
+        kernel_mat.mul_(-1. / (self.bandwidth ** self.exponent))
         kernel_mat.exp_()
         return kernel_mat
 
     def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
         if self.p == 2:
             # use faster implementation
-            kernel = LaplaceKernel(bandwidth=self.bandwidth, exponent=self.q, eps=self.eps,
+            kernel = LaplaceKernel(bandwidth=self.bandwidth, exponent=self.exponent, eps=self.eps,
                                    bandwidth_mode=self.bandwidth_mode)
             return kernel.get_function_grads(x, z, coefs)
 
         def forward_func(z):
-            dists = torch.cdist(x, z, p=self.p) ** self.q
-            factor = -((1. / self.bandwidth) ** self.q)
+            dists = torch.cdist(x, z, p=self.p) ** self.exponent
+            factor = -((1. / self.bandwidth) ** self.exponent)
             # this is \sum_j f(z_j), so the derivative wrt z will be jacobian(f)(z_j) for all z_j
             return coefs @ torch.exp(factor * (dists * (dists >= self.eps))).sum(dim=1)
 
@@ -489,6 +516,7 @@ class SumPowerLaplaceKernel(Kernel):
         self.bandwidth_mode = bandwidth_mode
 
     def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        
         diffs = x[:, None, :] - z[None, :, :]
         diffs.abs_()
         diffs.pow_(self.exponent)
@@ -526,18 +554,26 @@ class KermacProductLaplaceKernel(Kernel):
 
         if kermac is None:
             raise ImportError("kermac is required for KermacProductLaplaceKernel.")
+        
+    def get_sample_batch_size(self, n: int, d: int, scalar_size: int = 4, mem_constant: float = 20) -> int:
+        total_memory_possible = torch.cuda.get_device_properties(torch.device('cuda')).total_memory
+        curr_mem_use = torch.cuda.memory_allocated()
+        available_memory = total_memory_possible - curr_mem_use
+        return int(available_memory / (mem_constant*n*scalar_size))
 
     def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None, 
                                 mask_identical_points: bool = False) -> torch.Tensor:
         kernel_mat = kermac.cdist(self._transform_m(x, mat), self._transform_m(z, mat), p=self.exponent).squeeze(0)
         kernel_mat.clamp_(min=0)
-        if not self.is_adaptive_bandwidth:
-            self._adapt_bandwidth(kernel_mat)
 
         if mask_identical_points:
             mask = torch.abs(kernel_mat) > self.eps
 
         kernel_mat.pow_(self.exponent)
+
+        if not self.is_adaptive_bandwidth:
+            self._adapt_bandwidth(kernel_mat)
+
         kernel_mat.mul_(-1./(self.bandwidth**self.exponent))
         kernel_mat.exp_()
 
@@ -557,8 +593,6 @@ class KermacProductLaplaceKernel(Kernel):
         def dist_fn(x, z):
             kernel_mat = kermac.cdist(x, z, p=self.exponent).squeeze(0)
             kernel_mat.clamp_(min=0)
-            if not self.is_adaptive_bandwidth:
-                self._adapt_bandwidth(kernel_mat)
             if self.exponent != 1.0:
                 kernel_mat.pow_(self.exponent)
             return kernel_mat
@@ -568,8 +602,9 @@ class KermacProductLaplaceKernel(Kernel):
         xnum = self._transform_m(x[:, numerical_indices], mat_num)
         znum = self._transform_m(z[:, numerical_indices], mat_num)
 
-        dist_mat = dist_fn(xnum, znum)
+        kernel_mat = dist_fn(xnum, znum)
 
+        batch_size = self.get_sample_batch_size(znum.shape[0], znum.shape[1])
         for cat_idx, cat_vecs in zip(categorical_indices, categorical_vectors):
 
             x_cat = x[:, cat_idx].argmax(dim=-1)
@@ -581,11 +616,14 @@ class KermacProductLaplaceKernel(Kernel):
             cat_embedding_kernel = dist_fn(cat_vecs_transformed, cat_vecs_transformed)
 
             # Index into the kernel matrix using the categorical indices
-            dist_mat.add_(cat_embedding_kernel[x_cat[:, None], z_cat[None, :]])
+            for i in range(0, x.shape[0], batch_size):
+                kernel_mat[i:i+batch_size].add_(cat_embedding_kernel[x_cat[i:i+batch_size, None], z_cat[None, :]])
 
-        dist_mat.mul_(-1./(self.bandwidth**self.exponent))
-        dist_mat.exp_()
-        return dist_mat
+        if not self.is_adaptive_bandwidth:
+            self._adapt_bandwidth(kernel_mat)
+        kernel_mat.mul_(-1./(self.bandwidth**self.exponent))
+        kernel_mat.exp_()
+        return kernel_mat
 
     def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
         kernel_mat = self._get_kernel_matrix_impl(x, z, mask_identical_points=True)

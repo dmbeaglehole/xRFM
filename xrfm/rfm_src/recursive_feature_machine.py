@@ -470,6 +470,9 @@ class RFM(torch.nn.Module):
         """
         
         if self.bandwidth_mode == 'adaptive':
+            if isinstance(self.kernel_obj, SumPowerLaplaceKernel):
+                raise ValueError("Adaptive bandwidth is not yet supported for SumPowerLaplaceKernel.")
+
             # adaptive bandwidth will be reset on next kernel computation
             print("Resetting adaptive bandwidth")
             self.reset_adaptive_bandwidth()

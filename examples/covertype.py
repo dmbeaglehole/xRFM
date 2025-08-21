@@ -14,7 +14,11 @@ def mse_loss(y_pred, y_true):
     return (y_pred - y_true).pow(2).mean()
 
 def accuracy(y_pred, y_true):
-    return (y_pred.argmax(dim=1) == y_true.argmax(dim=1)).float().mean()
+    if isinstance(y_pred, torch.Tensor):
+        y_pred = y_pred.cpu().numpy()
+    if isinstance(y_true, torch.Tensor):
+        y_true = y_true.cpu().numpy()
+    return np.mean(y_pred.argmax(axis=1) == y_true.argmax(axis=1))
 
 def one_hot_encoding(y, device='cuda'):
     y = torch.from_numpy(y).long()-1
@@ -25,7 +29,7 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_
 X_val, X_test, y_val, y_test = train_test_split(X_test, y_test, test_size=0.2, random_state=0)
 
 
-max_n_train = 100_000
+max_n_train = 50_000
 max_n_val = 50_000
 min_subset_size = 25_000
 
@@ -49,22 +53,22 @@ print(f'y_test.shape: {y_test.shape}')
 DEVICE = torch.device("cuda")
 bw = 5.
 reg = 1e-3
-iters = 1
+iters = 3
 
 DEVICE = torch.device("cuda")
 xrfm_params = {
     'model': {
-        'kernel': "l1",
+        'kernel': "l1_kermac",
         'bandwidth': bw,
         'exponent': 1.0,
         'diag': False,
-        'bandwidth_mode': "constant"
+        'bandwidth_mode': "adaptive"
     },
     'fit': {
         'reg': reg,
         'iters': iters,
         'M_batch_size': len(X_train),
-        'verbose': False,
+        'verbose': True,
         'early_stop_rfm': True,
     }
 }
@@ -85,7 +89,7 @@ default_rfm_params = {
         "verbose": False
     }
 }
-xrfm_model = xRFM(xrfm_params, device=DEVICE, min_subset_size=min_subset_size, tuning_metric='accuracy', 
+xrfm_model = xRFM(xrfm_params, device=DEVICE, min_subset_size=min_subset_size, tuning_metric='logloss', 
                   default_rfm_params=default_rfm_params, 
                   split_method='top_vector_agop_on_subset')
 
