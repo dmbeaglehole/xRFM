@@ -80,7 +80,7 @@ class RFM(torch.nn.Module):
 
     def __init__(self, kernel: Union[Kernel, str], iters=5, bandwidth=10., exponent=1., bandwidth_mode='constant', 
                  agop_power=0.5, device=None, diag=False, verbose=True, mem_gb=None, tuning_metric='mse', 
-                 categorical_info=None, fast_categorical=True, class_converter=None, time_limit_s=None):
+                 categorical_info=None, fast_categorical=False, class_converter=None, time_limit_s=None):
         """
         Parameters
         ----------
@@ -211,11 +211,8 @@ class RFM(torch.nn.Module):
         self.class_converter = class_converter
         self.time_limit_s = time_limit_s
         
-        if categorical_info is not None and fast_categorical: 
-            if isinstance(self.kernel_obj, ProductLaplaceKernel):
-                self.set_categorical_indices(**categorical_info)
-            else:
-                print("Ignoring categorical indices for non-ProductLaplaceKernel.")
+        if categorical_info is not None and fast_categorical:
+            self.set_categorical_indices(**categorical_info)
 
         if mem_gb is not None:
             self.mem_gb = mem_gb

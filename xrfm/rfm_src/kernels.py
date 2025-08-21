@@ -98,8 +98,36 @@ class Kernel:
             return f_grads.transpose(-1, -2) @ f_grads
     
     def get_agop_categorical(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor,
-                             mat: Optional[torch.Tensor] = None, center_grads: bool = False) -> torch.Tensor:
-        raise NotImplementedError()
+                 mat: Optional[torch.Tensor] = None, center_grads: bool = False) -> torch.Tensor:
+        
+        numerical_indices = self.numerical_indices
+        categorical_indices = self.categorical_indices
+
+        # see get_function_grads
+        f_grads = self.get_function_grads(x, z, coefs, mat)
+        # merge output and n_z dims
+        f_grads = f_grads.reshape(-1, f_grads.shape[-1])
+        if center_grads:
+            f_grads = f_grads - f_grads.mean(dim=0, keepdim=True)
+        
+        # Initialize the final AGOP matrix with zeros
+        d = x.shape[1]
+        agop = torch.zeros((d, d), device=x.device, dtype=x.dtype)
+        
+        # Place numerical block if it exists
+        if numerical_indices is not None and len(numerical_indices) > 0:
+            agop[numerical_indices[:, None], numerical_indices] = (
+                f_grads[:, numerical_indices].T @ f_grads[:, numerical_indices]
+            )
+        
+        # Place categorical blocks
+        if categorical_indices is not None:
+            for cat_idx in categorical_indices:
+                agop[cat_idx[:, None], cat_idx] = (
+                    f_grads[:, cat_idx].T @ f_grads[:, cat_idx]
+                )
+        
+        return agop
         
     def get_kernel_matrix(self, x: torch.Tensor, z: torch.Tensor,
                           mat: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -233,6 +261,54 @@ class LaplaceKernel(Kernel):
         kernel_mat.exp_()
         return kernel_mat
 
+    def _get_kernel_matrix_categorical_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        numerical_indices = self.numerical_indices # (n_num,)
+        categorical_indices = self.categorical_indices # List of (d_cat_i,) for each categorical feature
+        categorical_vectors = self.categorical_vectors # List of (d_cat_i, d_cat_i) for each categorical feature
+
+        assert len(numerical_indices) > 0 or len(categorical_indices) > 0, "No numerical or categorical features"
+        assert len(categorical_indices) == len(categorical_vectors), "Number of categorical index and vector groups must match"
+        
+        def squared_dist_fn(x, z):
+            kernel_mat = torch.cdist(x, z)**2
+            kernel_mat.clamp_(min=0)
+            if not self.is_adaptive_bandwidth:
+                self._adapt_bandwidth(kernel_mat)
+            return kernel_mat
+
+        
+        mat_num = get_sub_matrix(mat, numerical_indices)
+        xnum = self._transform_m(x[:, numerical_indices], mat_num)
+        znum = self._transform_m(z[:, numerical_indices], mat_num)
+
+        # Initialize kernel matrix with squared distances of numerical features
+        dist_mat = squared_dist_fn(xnum, znum)
+
+        # Add to running total of squared distances for categorical features
+        for cat_idx, cat_vecs in zip(categorical_indices, categorical_vectors):
+
+            x_cat = x[:, cat_idx].argmax(dim=-1)
+            z_cat = z[:, cat_idx].argmax(dim=-1)
+
+            # Get the kernel matrix for this categorical feature's embeddings
+            mat_cat = get_sub_matrix(mat, cat_idx)
+            cat_vecs_transformed = self._transform_m(cat_vecs, mat_cat)
+            cat_embedding_kernel = squared_dist_fn(cat_vecs_transformed, cat_vecs_transformed)
+
+            # Index into the kernel matrix using the categorical indices
+            dist_mat.add_(cat_embedding_kernel[x_cat[:, None], z_cat[None, :]])
+
+        # Take square root of squared distances to get 2-norm distances -> ||x-z||_2
+        dist_mat.sqrt_()
+
+        # Apply exponent -> ||x-z||^p_2
+        dist_mat.pow_(self.exponent)
+
+        # Apply bandwidth and exponent -> exp(-||x-z||^p_2 / L^p)
+        dist_mat.mul_(-1./(self.bandwidth**self.exponent))
+        dist_mat.exp_()
+        return dist_mat
+
     def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
         dists = torch.cdist(x, z)
         dists.clamp_(min=0)
@@ -348,38 +424,6 @@ class ProductLaplaceKernel(Kernel):
             return coefs @ torch.exp(factor * (dists * (dists >= self.eps))).sum(dim=1)
 
         return torch.func.jacrev(forward_func)(z)
-    
-    def get_agop_categorical(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor,
-                 mat: Optional[torch.Tensor] = None, center_grads: bool = False) -> torch.Tensor:
-        
-        numerical_indices = self.numerical_indices
-        categorical_indices = self.categorical_indices
-
-        # see get_function_grads
-        f_grads = self.get_function_grads(x, z, coefs, mat)
-        # merge output and n_z dims
-        f_grads = f_grads.reshape(-1, f_grads.shape[-1])
-        if center_grads:
-            f_grads = f_grads - f_grads.mean(dim=0, keepdim=True)
-        
-        # Initialize the final AGOP matrix with zeros
-        d = x.shape[1]
-        agop = torch.zeros((d, d), device=x.device, dtype=x.dtype)
-        
-        # Place numerical block if it exists
-        if numerical_indices is not None and len(numerical_indices) > 0:
-            agop[numerical_indices[:, None], numerical_indices] = (
-                f_grads[:, numerical_indices].T @ f_grads[:, numerical_indices]
-            )
-        
-        # Place categorical blocks
-        if categorical_indices is not None:
-            for cat_idx in categorical_indices:
-                agop[cat_idx[:, None], cat_idx] = (
-                    f_grads[:, cat_idx].T @ f_grads[:, cat_idx]
-                )
-        
-        return agop
 
 
 class LpqLaplaceKernel(Kernel):
@@ -501,6 +545,47 @@ class KermacProductLaplaceKernel(Kernel):
             kernel_mat = kernel_mat * mask
 
         return kernel_mat
+    
+    def _get_kernel_matrix_categorical_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        numerical_indices = self.numerical_indices # (n_num,)
+        categorical_indices = self.categorical_indices # List of (d_cat_i,) for each categorical feature
+        categorical_vectors = self.categorical_vectors # List of (d_cat_i, d_cat_i) for each categorical feature
+
+        assert len(numerical_indices) > 0 or len(categorical_indices) > 0, "No numerical or categorical features"
+        assert len(categorical_indices) == len(categorical_vectors), "Number of categorical index and vector groups must match"
+        
+        def dist_fn(x, z):
+            kernel_mat = kermac.cdist(x, z, p=self.exponent).squeeze(0)
+            kernel_mat.clamp_(min=0)
+            if not self.is_adaptive_bandwidth:
+                self._adapt_bandwidth(kernel_mat)
+            if self.exponent != 1.0:
+                kernel_mat.pow_(self.exponent)
+            return kernel_mat
+
+        
+        mat_num = get_sub_matrix(mat, numerical_indices)
+        xnum = self._transform_m(x[:, numerical_indices], mat_num)
+        znum = self._transform_m(z[:, numerical_indices], mat_num)
+
+        dist_mat = dist_fn(xnum, znum)
+
+        for cat_idx, cat_vecs in zip(categorical_indices, categorical_vectors):
+
+            x_cat = x[:, cat_idx].argmax(dim=-1)
+            z_cat = z[:, cat_idx].argmax(dim=-1)
+
+            # Get the kernel matrix for this categorical feature's embeddings
+            mat_cat = get_sub_matrix(mat, cat_idx)
+            cat_vecs_transformed = self._transform_m(cat_vecs, mat_cat)
+            cat_embedding_kernel = dist_fn(cat_vecs_transformed, cat_vecs_transformed)
+
+            # Index into the kernel matrix using the categorical indices
+            dist_mat.add_(cat_embedding_kernel[x_cat[:, None], z_cat[None, :]])
+
+        dist_mat.mul_(-1./(self.bandwidth**self.exponent))
+        dist_mat.exp_()
+        return dist_mat
 
     def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
         kernel_mat = self._get_kernel_matrix_impl(x, z, mask_identical_points=True)
