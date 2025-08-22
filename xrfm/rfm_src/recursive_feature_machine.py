@@ -301,7 +301,7 @@ class RFM(torch.nn.Module):
         """
         samples = samples.to(self.device)
         self.centers = self.centers.to(self.device)
-
+        
         if self.M is None:
             if self.diag:
                 self.M = torch.ones(samples.shape[-1], device=samples.device, dtype=samples.dtype)
@@ -524,7 +524,7 @@ class RFM(torch.nn.Module):
             targets = targets.to(self.device)
 
 
-        kernel_matrix = self.kernel(centers, centers)    
+        kernel_matrix = self.kernel(centers, centers)  
 
         if self.reg > 0:
             kernel_matrix.diagonal().add_(self.reg)

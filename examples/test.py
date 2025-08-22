@@ -16,15 +16,15 @@ def fstar(X):
 def mse_loss(y_pred, y_true):
     return (y_pred - y_true).pow(2).mean()
 
-n = 5_000 # samples
-ntest = 5_000
-d = 1000  # dimension
+n = 2000 #19115 # samples
+ntest = 2731
+d = 100 #8036  # dimension
 
-bw = 10
-reg = 1e-3
+bw = 10 #53.5197219946031
+reg = 1e-3 #1.6771925395609
 iters = 5
-min_subset_size = 5_000
-exponent = 1.0
+min_subset_size = 19115
+exponent = 0.99 #0.9591755283533
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

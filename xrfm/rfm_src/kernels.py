@@ -94,8 +94,10 @@ class Kernel:
     def get_agop(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor,
                  mat: Optional[torch.Tensor] = None, center_grads: bool = False) -> torch.Tensor:
         if self.handle_categorical:
+            print("Getting agop for categorical")
             return self.get_agop_categorical(x, z, coefs, mat, center_grads)
         else:
+            print("Getting agop for numerical")
             # see get_function_grads
             f_grads = self.get_function_grads(x, z, coefs, mat)
             # merge output and n_z dims
@@ -212,7 +214,6 @@ class LightLaplaceKernel(Kernel):
             
         if not self.is_adaptive_bandwidth:
             self._adapt_bandwidth(kernel_mat)
-        
 
         kernel_mat.mul_(-1. / (self.bandwidth ** self.exponent))
         kernel_mat.exp_()
@@ -230,9 +231,8 @@ class LightLaplaceKernel(Kernel):
         dists.clamp_(min=0)
         dists.sqrt_()
 
-        gamma = 1. / self.bandwidth
         kernel_mat = dists ** self.exponent
-        kernel_mat.mul_(-gamma)
+        kernel_mat.mul_(-1/(self.bandwidth ** self.exponent))
         kernel_mat.exp_()
 
         # now compute M
@@ -241,7 +241,7 @@ class LightLaplaceKernel(Kernel):
         dists.pow_(self.exponent - 2)
         kernel_mat.mul_(dists)
         kernel_mat.mul_(mask)  # this is very important for numerical stability
-        kernel_mat.mul_(-gamma * self.exponent)
+        kernel_mat.mul_(-self.exponent / (self.bandwidth ** self.exponent))
 
         # now we want result[l, j, d] = \sum_i coefs[l, i] M[i, j] (z[j, d] - x[i, d])
         return torch.einsum('li,ij,jd->ljd', coefs, kernel_mat, zm) - torch.einsum('li,ij,id->ljd', coefs, kernel_mat, xm)
@@ -305,7 +305,6 @@ class LaplaceKernel(Kernel):
         # Add to running total of squared distances for categorical features
         batch_size = self.get_sample_batch_size(znum.shape[0], znum.shape[1])
         for i, (cat_idx, cat_vecs) in enumerate(zip(categorical_indices, categorical_vectors)):
-            print(f"{i+1} of {len(categorical_indices)}")
             x_cat = x[:, cat_idx].argmax(dim=-1)
             z_cat = z[:, cat_idx].argmax(dim=-1)
 
@@ -341,9 +340,8 @@ class LaplaceKernel(Kernel):
         # therefore, setting f_l (z) = \sum_i coefs[l, i] k(x[i], z), we have
         # \grad f_l(z[j]) = \sum_i coefs[l, i] M[i, j] (z[j] - x[i]),
         # where M[i, j] = -\gamma \beta k(x[i], z[j]) \|x[i] - z[j]\|^{\beta - 2}
-        gamma = 1. / self.bandwidth
         kernel_mat = dists ** self.exponent
-        kernel_mat.mul_(-gamma)
+        kernel_mat.mul_(-1 / (self.bandwidth ** self.exponent))
         kernel_mat.exp_()
 
         # now compute M
@@ -352,7 +350,7 @@ class LaplaceKernel(Kernel):
         dists.pow_(self.exponent - 2)
         kernel_mat.mul_(dists)
         kernel_mat.mul_(mask)  # this is very important for numerical stability
-        kernel_mat.mul_(-gamma * self.exponent)
+        kernel_mat.mul_(-self.exponent / (self.bandwidth ** self.exponent))
 
         # now we want result[l, j, d] = \sum_i coefs[l, i] M[i, j] (z[j, d] - x[i, d])
         return torch.einsum('li,ij,jd->ljd', coefs, kernel_mat, z) - torch.einsum('li,ij,id->ljd', coefs, kernel_mat, x)
@@ -561,13 +559,10 @@ class KermacProductLaplaceKernel(Kernel):
         available_memory = total_memory_possible - curr_mem_use
         return int(available_memory / (mem_constant*n*scalar_size))
 
-    def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None, 
-                                mask_identical_points: bool = False) -> torch.Tensor:
+    def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, 
+                                mat: Optional[torch.Tensor] = None) -> torch.Tensor:
         kernel_mat = kermac.cdist(self._transform_m(x, mat), self._transform_m(z, mat), p=self.exponent).squeeze(0)
         kernel_mat.clamp_(min=0)
-
-        if mask_identical_points:
-            mask = torch.abs(kernel_mat) > self.eps
 
         kernel_mat.pow_(self.exponent)
 
@@ -576,9 +571,6 @@ class KermacProductLaplaceKernel(Kernel):
 
         kernel_mat.mul_(-1./(self.bandwidth**self.exponent))
         kernel_mat.exp_()
-
-        if mask_identical_points:
-            kernel_mat = kernel_mat * mask
 
         return kernel_mat
     
@@ -626,11 +618,34 @@ class KermacProductLaplaceKernel(Kernel):
         return kernel_mat
 
     def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
-        kernel_mat = self._get_kernel_matrix_impl(x, z, mask_identical_points=True)
+
+        kernel_mat = self._get_kernel_matrix_impl(x, z)
+        a_mat = -kernel_mat * self.exponent / (self.bandwidth ** self.exponent)
+
         x = x.T.contiguous()
         z = z.T.contiguous()
-        out = kermac.cdist_grad(kernel_mat, x, coefs, z, p=self.exponent)
-        return out.transpose(-2, -1)
+
+        # print("in kermac grad: before masking kernel_mat[:3, :3]", kernel_mat[:3, :3])
+        # print("self.eps", self.eps)
+        mask = (kernel_mat < (1-self.eps)).float()
+        # print("mask.shape", mask.shape)
+        a_mat = a_mat * mask
+        print("Number of points masked in gradient computation", (1-mask).sum().int().item())
+        
+        print("any nan in a_mat", a_mat.isnan().any().item())
+        print("any nan in x", x.isnan().any().item())
+        print("any nan in z", z.isnan().any().item())
+        print("any nan in coefs", coefs.isnan().any().item())
+        print("self.exponent", self.exponent)
+        print("self.bandwidth", self.bandwidth)
+        print("self.eps", self.eps)
+
+        out = kermac.cdist_grad(a_mat, x, coefs, z, p=self.exponent)
+        print("out.shape", out.shape)
+        print("out.max", out.max())
+        print("out.min", out.min())
+        print("out.isnan().sum()", out.isnan().sum())
+        return out.transpose(-2, -1).float()
     
 
 if __name__ == '__main__':
