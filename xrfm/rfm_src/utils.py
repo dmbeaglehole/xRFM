@@ -47,7 +47,7 @@ def matrix_power(M, power):
     # else:
     #     raise ValueError(f"Invalid matrix shape for square root: {M.shape}")
     
-def stable_matrix_power(M, power):
+def stable_matrix_power(M, power, MAX_DIMENSIONS_FOR_SVD=6000):
     """
     Compute the power of a matrix.
     :param M: Matrix to power.
@@ -70,9 +70,15 @@ def stable_matrix_power(M, power):
             if scale > 0:
                 M = M / scale
 
-        M_cpu = M.cpu().float()
-        M_cpu.diagonal().add_(1e-8)
-        U, S, _ = torch.linalg.svd(M_cpu)
+        if M.shape[0] < MAX_DIMENSIONS_FOR_SVD:
+            print("Using SVD")
+            M.diagonal().add_(1e-8)
+            U, S, _ = torch.linalg.svd(M)
+        else:
+            print("Using SVD lowrank with q=", MAX_DIMENSIONS_FOR_SVD)
+            print("M.shape", M.shape)
+            U, S, _ = torch.svd_lowrank(M, q=MAX_DIMENSIONS_FOR_SVD)
+
         S[S<0] = 0.
         return (U @ torch.diag(S**power) @ U.T).to(device=M.device, dtype=M.dtype)
 
