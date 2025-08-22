@@ -70,17 +70,11 @@ def stable_matrix_power(M, power):
             if scale > 0:
                 M = M / scale
 
-        if M.shape[0] < 700:
-            M_cpu = M.cpu().float()
-            M_cpu.diagonal().add_(1e-8)
-            U, S, _ = torch.linalg.svd(M_cpu)
-            S[S<0] = 0.
-            return (U @ torch.diag(S**power) @ U.T).to(device=M.device, dtype=M.dtype)
-        else:
-            M.diagonal().add_(1e-8)
-            S, U = torch.linalg.eigh(M)
-            S[S<0] = 0.
-            return (U @ torch.diag(S**power) @ U.T).to(device=M.device, dtype=M.dtype)
+        M_cpu = M.cpu().float()
+        M_cpu.diagonal().add_(1e-8)
+        U, S, _ = torch.linalg.svd(M_cpu)
+        S[S<0] = 0.
+        return (U @ torch.diag(S**power) @ U.T).to(device=M.device, dtype=M.dtype)
 
     elif len(M.shape) == 1:
         # Handle NaNs

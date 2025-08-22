@@ -8,7 +8,7 @@ import time
 np.random.seed(0)
 torch.manual_seed(0)
 
-M_batch_size = 256
+M_batch_size = 2187
 
 def fstar(X):
     return (X[:, 0] ** 2 + 0.5*X[:, 1])[:,None].float()
@@ -16,15 +16,15 @@ def fstar(X):
 def mse_loss(y_pred, y_true):
     return (y_pred - y_true).pow(2).mean()
 
-n = 2000 #19115 # samples
-ntest = 2731
-d = 100 #8036  # dimension
+n = 2187 #19115 # samples
+ntest = 313
+d = 1773 #8036  # dimension
 
-bw = 10 #53.5197219946031
-reg = 1e-3 #1.6771925395609
+bw = 15.5974677725666
+reg = 1.296977650551
 iters = 5
 min_subset_size = 19115
-exponent = 0.92 #0.9591755283533
+exponent = 0.7249181554669
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -38,16 +38,16 @@ y_test = fstar(X_test).to(DEVICE)
 
 xrfm_params = {
     'model': {
-        'kernel': "l1", #l1_kermac", #"l1_kermac",
+        'kernel': "l1_kermac", #l1_kermac", #"l1_kermac",
         'bandwidth': bw,
         'exponent': exponent,
-        'diag': False,
+        'diag': True,
         'bandwidth_mode': "adaptive"
     },
     'fit': {
         'reg': reg,
         'iters': iters,
-        'M_batch_size': 500,
+        'M_batch_size': M_batch_size,
         'verbose': True,
         'early_stop_rfm': True,
     }
