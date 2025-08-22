@@ -622,29 +622,13 @@ class KermacProductLaplaceKernel(Kernel):
         kernel_mat = self._get_kernel_matrix_impl(x, z)
         a_mat = -kernel_mat * self.exponent / (self.bandwidth ** self.exponent)
 
-        x = x.T.contiguous()
-        z = z.T.contiguous()
-
-        # print("in kermac grad: before masking kernel_mat[:3, :3]", kernel_mat[:3, :3])
-        # print("self.eps", self.eps)
         mask = (kernel_mat < (1-self.eps)).float()
-        # print("mask.shape", mask.shape)
         a_mat = a_mat * mask
         print("Number of points masked in gradient computation", (1-mask).sum().int().item())
-        
-        print("any nan in a_mat", a_mat.isnan().any().item())
-        print("any nan in x", x.isnan().any().item())
-        print("any nan in z", z.isnan().any().item())
-        print("any nan in coefs", coefs.isnan().any().item())
-        print("self.exponent", self.exponent)
-        print("self.bandwidth", self.bandwidth)
-        print("self.eps", self.eps)
 
+        x = x.T.contiguous()
+        z = z.T.contiguous()
         out = kermac.cdist_grad(a_mat, x, coefs, z, p=self.exponent)
-        print("out.shape", out.shape)
-        print("out.max", out.max())
-        print("out.min", out.min())
-        print("out.isnan().sum()", out.isnan().sum())
         return out.transpose(-2, -1).float()
     
 

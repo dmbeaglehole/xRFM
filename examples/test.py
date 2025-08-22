@@ -24,7 +24,7 @@ bw = 10 #53.5197219946031
 reg = 1e-3 #1.6771925395609
 iters = 5
 min_subset_size = 19115
-exponent = 0.99 #0.9591755283533
+exponent = 0.92 #0.9591755283533
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -38,7 +38,7 @@ y_test = fstar(X_test).to(DEVICE)
 
 xrfm_params = {
     'model': {
-        'kernel': "l1_kermac", #l1_kermac", #"l1_kermac",
+        'kernel': "l1", #l1_kermac", #"l1_kermac",
         'bandwidth': bw,
         'exponent': exponent,
         'diag': False,
