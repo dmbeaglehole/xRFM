@@ -27,7 +27,7 @@ class Kernel:
     def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError()
 
-    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
+    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
         raise NotImplementedError()
 
     def _transform_m(self, x: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -172,8 +172,8 @@ class Kernel:
         :param mat: Matrix of shape (d_in, d_out) or vector of shape (d_in)
         :return: Should return a tensor of shape (f, n_z, d_in).
         """
-        grads = self._get_function_grad_impl(self._transform_m(x, mat), self._transform_m(z, mat), coefs)
-        return self._transform_m(grads, mat)
+        grads = self._get_function_grad_impl(x, z, coefs, mat) # get grad_Mx k(Mx, Mz)
+        return self._transform_m(grads, mat) # use that grad_x k(Mx, Mz) = M grad_Mx k(Mx, Mz)
     
     def get_agop_diag(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor,
                       mat: Optional[torch.Tensor] = None, center_grads: bool = False) -> torch.Tensor:
@@ -331,8 +331,11 @@ class LaplaceKernel(Kernel):
         dist_mat.exp_()
         return dist_mat
 
-    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
-        dists = torch.cdist(x, z)
+    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+
+        xm = self._transform_m(x, mat)
+        zm = self._transform_m(z, mat)
+        dists = torch.cdist(xm, zm)
         dists.clamp_(min=0)
 
         # gradient of k(x, z) = exp(-\gamma \|x - z\|^\beta) wrt z  (where \beta = self.exponent)
@@ -353,7 +356,7 @@ class LaplaceKernel(Kernel):
         kernel_mat.mul_(-self.exponent / (self.bandwidth ** self.exponent))
 
         # now we want result[l, j, d] = \sum_i coefs[l, i] M[i, j] (z[j, d] - x[i, d])
-        return torch.einsum('li,ij,jd->ljd', coefs, kernel_mat, z) - torch.einsum('li,ij,id->ljd', coefs, kernel_mat, x)
+        return torch.einsum('li,ij,jd->ljd', coefs, kernel_mat, zm) - torch.einsum('li,ij,id->ljd', coefs, kernel_mat, xm)
 
 class ProductLaplaceKernel(Kernel):
     def __init__(self, bandwidth: float, exponent: float, eps: float = 1e-10, bandwidth_mode: str = 'constant'):
@@ -439,14 +442,16 @@ class ProductLaplaceKernel(Kernel):
         kernel_mat.exp_()
         return kernel_mat
 
-    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
+    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        xm = self._transform_m(x, mat)
+        zm = self._transform_m(z, mat)
         def forward_func(z):
-            dists = torch.cdist(x, z, p=self.exponent) ** self.exponent
+            dists = torch.cdist(xm, zm, p=self.exponent) ** self.exponent
             factor = -((1. / self.bandwidth) ** self.exponent)
             # this is \sum_j f(z_j), so the derivative wrt z will be jacobian(f)(z_j) for all z_j
             return coefs @ torch.exp(factor * (dists * (dists >= self.eps))).sum(dim=1)
 
-        return torch.func.jacrev(forward_func)(z)
+        return torch.func.jacrev(forward_func)(zm)
 
 
 class LpqLaplaceKernel(Kernel):
@@ -463,13 +468,8 @@ class LpqLaplaceKernel(Kernel):
         self.eps = eps  # this one is for numerical stability
         self.bandwidth_mode = bandwidth_mode
 
-    def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
-        if self.p == 2:
-            # faster implementation
-            kernel = LaplaceKernel(bandwidth=self.bandwidth, exponent=self.exponent, eps=self.eps, bandwidth_mode=self.bandwidth_mode)
-            return kernel.get_kernel_matrix(x, z)
-
-        kernel_mat = torch.cdist(x, z, p=self.p)
+    def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        kernel_mat = torch.cdist(self._transform_m(x, mat), self._transform_m(z, mat), p=self.p)
         kernel_mat.clamp_(min=0)
         
         kernel_mat.pow_(self.exponent)
@@ -480,20 +480,16 @@ class LpqLaplaceKernel(Kernel):
         kernel_mat.exp_()
         return kernel_mat
 
-    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
-        if self.p == 2:
-            # use faster implementation
-            kernel = LaplaceKernel(bandwidth=self.bandwidth, exponent=self.exponent, eps=self.eps,
-                                   bandwidth_mode=self.bandwidth_mode)
-            return kernel.get_function_grads(x, z, coefs)
-
+    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        xm = self._transform_m(x, mat)
+        zm = self._transform_m(z, mat)
         def forward_func(z):
-            dists = torch.cdist(x, z, p=self.p) ** self.exponent
+            dists = torch.cdist(xm, zm, p=self.p) ** self.exponent
             factor = -((1. / self.bandwidth) ** self.exponent)
             # this is \sum_j f(z_j), so the derivative wrt z will be jacobian(f)(z_j) for all z_j
             return coefs @ torch.exp(factor * (dists * (dists >= self.eps))).sum(dim=1)
 
-        return torch.func.jacrev(forward_func)(z)
+        return torch.func.jacrev(forward_func)(zm)
     
 class SumPowerLaplaceKernel(Kernel):
     def __init__(self, bandwidth: float, exponent: float, eps: float = 1e-10, const_mix: float = 0.0,
@@ -513,7 +509,9 @@ class SumPowerLaplaceKernel(Kernel):
         self.eps = eps  # this one is for numerical stability
         self.bandwidth_mode = bandwidth_mode
 
-    def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+    def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        x = self._transform_m(x, mat)
+        z = self._transform_m(z, mat)
         
         diffs = x[:, None, :] - z[None, :, :]
         diffs.abs_()
@@ -526,17 +524,19 @@ class SumPowerLaplaceKernel(Kernel):
         sum.pow_(self.power)
         return sum
 
-    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
+    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        xm = self._transform_m(x, mat)
+        zm = self._transform_m(z, mat)
         def forward_func(z):
             # compute \sum_j f(z_j)
-            diffs = torch.abs(x[:, None, :] - z[None, :, :]).pow(self.exponent)
+            diffs = torch.abs(xm[:, None, :] - zm[None, :, :]).pow(self.exponent)
             diffs = torch.exp((-1. / (self.bandwidth ** self.exponent)) * diffs)
             sum = (1.0 - self.const_mix) * (diffs.sum(dim=-1) / x.shape[-1]) + self.const_mix
             sum = sum ** self.power
             sum = sum.sum(dim=-1)  # sum over z
             return coefs @ sum
 
-        return torch.func.jacrev(forward_func)(z)
+        return torch.func.jacrev(forward_func)(zm)
 
 class KermacProductLaplaceKernel(Kernel):
     def __init__(self, bandwidth: float, exponent: float, eps: float = 1e-8, bandwidth_mode: str = 'constant'):
@@ -582,8 +582,8 @@ class KermacProductLaplaceKernel(Kernel):
         assert len(numerical_indices) > 0 or len(categorical_indices) > 0, "No numerical or categorical features"
         assert len(categorical_indices) == len(categorical_vectors), "Number of categorical index and vector groups must match"
         
-        def dist_fn(x, z):
-            kernel_mat = kermac.cdist(x, z, p=self.exponent).squeeze(0)
+        def dist_fn(x_, z_):
+            kernel_mat = kermac.cdist(x_, z_, p=self.exponent).squeeze(0)
             kernel_mat.clamp_(min=0)
             if self.exponent != 1.0:
                 kernel_mat.pow_(self.exponent)
@@ -617,21 +617,130 @@ class KermacProductLaplaceKernel(Kernel):
         kernel_mat.exp_()
         return kernel_mat
 
-    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
+    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        
+        if self.handle_categorical:
+            kernel_mat = self._get_kernel_matrix_categorical_impl(x, z, mat)
+        else:
+            kernel_mat = self._get_kernel_matrix_impl(x, z, mat)
 
-        kernel_mat = self._get_kernel_matrix_impl(x, z)
         a_mat = -kernel_mat * self.exponent / (self.bandwidth ** self.exponent)
 
         mask = (kernel_mat < (1-self.eps)).float()
         a_mat = a_mat * mask
         print("Number of points masked in gradient computation", (1-mask).sum().int().item())
 
-        x = x.T.contiguous()
-        z = z.T.contiguous()
-        out = kermac.cdist_grad(a_mat, x, coefs, z, p=self.exponent)
+        xm = self._transform_m(x, mat)
+        zm = self._transform_m(z, mat)
+        xm = xm.T.contiguous()
+        zm = zm.T.contiguous()
+        out = kermac.cdist_grad(a_mat, xm, coefs, zm, p=self.exponent)
         return out.transpose(-2, -1).float()
     
 
+class KermacLpqLaplaceKernel(Kernel):
+    def __init__(self, bandwidth: float, p: float, q: float, eps: float = 1e-10, bandwidth_mode: str = 'constant'):
+        super().__init__()
+        assert bandwidth > 0
+        assert 0 < p <= 2
+        assert 0 < q <= p
+        assert eps > 0
+        self.bandwidth = bandwidth
+        self.base_bandwidth = bandwidth
+        self.p = p
+        self.exponent = q
+        self.eps = eps  # this one is for numerical stability
+        self.bandwidth_mode = bandwidth_mode
+
+    def get_sample_batch_size(self, n: int, d: int, scalar_size: int = 4, mem_constant: float = 20) -> int:
+        total_memory_possible = torch.cuda.get_device_properties(torch.device('cuda')).total_memory
+        curr_mem_use = torch.cuda.memory_allocated()
+        available_memory = total_memory_possible - curr_mem_use
+        return int(available_memory / (mem_constant*n*scalar_size))
+
+    def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        kernel_mat = kermac.cdist(self._transform_m(x, mat), self._transform_m(z, mat), p=self.p).squeeze(0)
+        kernel_mat.clamp_(min=0)
+        
+        kernel_mat.pow_(self.exponent)
+        if not self.is_adaptive_bandwidth:
+            self._adapt_bandwidth(kernel_mat)
+
+        kernel_mat.mul_(-1. / (self.bandwidth ** self.exponent))
+        kernel_mat.exp_()
+        return kernel_mat
+    
+    def _get_kernel_matrix_categorical_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        numerical_indices = self.numerical_indices # (n_num,)
+        categorical_indices = self.categorical_indices # List of (d_cat_i,) for each categorical feature
+        categorical_vectors = self.categorical_vectors # List of (d_cat_i, d_cat_i) for each categorical feature
+
+        assert len(numerical_indices) > 0 or len(categorical_indices) > 0, "No numerical or categorical features"
+        assert len(categorical_indices) == len(categorical_vectors), "Number of categorical index and vector groups must match"
+        
+        def p_power_dist_fn(x_, z_):
+            kernel_mat = kermac.cdist(x_, z_, p=self.p).squeeze(0)
+            kernel_mat.clamp_(min=0)
+            if self.p != 1.0:
+                kernel_mat.pow_(self.p)
+            return kernel_mat
+
+        
+        mat_num = get_sub_matrix(mat, numerical_indices)
+        xnum = self._transform_m(x[:, numerical_indices], mat_num)
+        znum = self._transform_m(z[:, numerical_indices], mat_num)
+
+        kernel_mat = p_power_dist_fn(xnum, znum)
+
+        batch_size = self.get_sample_batch_size(znum.shape[0], znum.shape[1])
+        for cat_idx, cat_vecs in zip(categorical_indices, categorical_vectors):
+
+            x_cat = x[:, cat_idx].argmax(dim=-1)
+            z_cat = z[:, cat_idx].argmax(dim=-1)
+
+            # Get the kernel matrix for this categorical feature's embeddings
+            mat_cat = get_sub_matrix(mat, cat_idx)
+            cat_vecs_transformed = self._transform_m(cat_vecs, mat_cat)
+            cat_embedding_kernel = p_power_dist_fn(cat_vecs_transformed, cat_vecs_transformed)
+
+            # Index into the kernel matrix using the categorical indices
+            for i in range(0, x.shape[0], batch_size):
+                kernel_mat[i:i+batch_size].add_(cat_embedding_kernel[x_cat[i:i+batch_size, None], z_cat[None, :]])
+
+        kernel_mat.clamp_(min=0)
+        kernel_mat.pow_(self.exponent / self.p) # undo p-power then exponentiate for bandwidth adaptation
+
+        if not self.is_adaptive_bandwidth:
+            self._adapt_bandwidth(kernel_mat)
+        kernel_mat.mul_(-1./(self.bandwidth**self.exponent))
+        kernel_mat.exp_()
+        return kernel_mat
+
+    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if self.handle_categorical:
+            kernel_mat = self._get_kernel_matrix_categorical_impl(x, z, mat)
+        else:
+            kernel_mat = self._get_kernel_matrix_impl(x, z, mat)
+
+        xm = self._transform_m(x, mat)
+        zm = self._transform_m(z, mat)
+
+        dist_mat = kermac.cdist(xm, zm, p=self.p).squeeze(0)
+        mask = (dist_mat < (1-self.eps)).float()
+
+        dist_mat = torch.clamp(dist_mat, min=self.eps)
+        a_mat = -kernel_mat * self.exponent / (self.bandwidth ** self.exponent) / dist_mat.pow(self.exponent - self.p)
+
+        a_mat = a_mat * mask
+        print("Number of points masked in gradient computation", (1-mask).sum().int().item())
+
+        xm = xm.T.contiguous()
+        zm = zm.T.contiguous()
+        out = kermac.cdist_grad(a_mat, xm, coefs, zm, p=self.exponent)
+        return out.transpose(-2, -1).float()
+
+        
+    
 if __name__ == '__main__':
     # kernel = LaplaceKernel(bandwidth=2.0, exponent=1.0)
     kernel = KermacProductLaplaceKernel(bandwidth=2.0, exponent=1.2)
@@ -659,3 +768,4 @@ if __name__ == '__main__':
              linestyle='--', label='finite diff')
     plt.legend()
     plt.show()
+

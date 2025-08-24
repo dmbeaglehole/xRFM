@@ -18,13 +18,15 @@ def mse_loss(y_pred, y_true):
 
 n = 2187 #19115 # samples
 ntest = 313
-d = 1773 #8036  # dimension
+d = 50 #8036  # dimension
 
 bw = 15.5974677725666
 reg = 1.296977650551
 iters = 5
 min_subset_size = 19115
-exponent = 0.7249181554669
+exponent = 0.8
+p = 1.1
+assert 0 < exponent <= p
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -38,10 +40,11 @@ y_test = fstar(X_test).to(DEVICE)
 
 xrfm_params = {
     'model': {
-        'kernel': "l1_kermac", #l1_kermac", #"l1_kermac",
+        'kernel': "lpq_kermac", #l1_kermac", #"l1_kermac",
         'bandwidth': bw,
         'exponent': exponent,
-        'diag': True,
+        'norm_p': p,
+        'diag': False,
         'bandwidth_mode': "adaptive"
     },
     'fit': {

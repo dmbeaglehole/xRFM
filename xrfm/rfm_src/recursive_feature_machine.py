@@ -2,7 +2,8 @@ from .class_conversion import ClassificationConverter
 from .eigenpro import KernelModel
     
 import torch, numpy as np
-from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplaceKernel, LightLaplaceKernel, KermacProductLaplaceKernel
+from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplaceKernel, LightLaplaceKernel
+from .kernels import KermacProductLaplaceKernel, KermacLpqLaplaceKernel
 from tqdm.contrib import tenumerate
 
 from .metrics import Metrics, Metric
@@ -78,7 +79,7 @@ class RFM(torch.nn.Module):
     >>> probabilities = model.predict_proba(X_val)
     """
 
-    def __init__(self, kernel: Union[Kernel, str], iters=5, bandwidth=10., exponent=1., bandwidth_mode='constant', 
+    def __init__(self, kernel: Union[Kernel, str], iters=5, bandwidth=10., exponent=1., norm_p=None, bandwidth_mode='constant', 
                  agop_power=0.5, device=None, diag=False, verbose=True, mem_gb=None, tuning_metric='mse', 
                  categorical_info=None, fast_categorical=False, class_converter=None, time_limit_s=None):
         """
@@ -193,7 +194,7 @@ class RFM(torch.nn.Module):
         """
         super().__init__()
         if isinstance(kernel, str):
-            kernel = self.kernel_from_str(kernel, bandwidth=bandwidth, exponent=exponent)
+            kernel = self.kernel_from_str(kernel, bandwidth=bandwidth, exponent=exponent, norm_p=norm_p)
         self.kernel_obj = kernel
         self.agop_power = agop_power
         self.M = None
@@ -243,7 +244,7 @@ class RFM(torch.nn.Module):
         """
         return self.kernel_obj.get_kernel_matrix(x, z, self.sqrtM if self.use_sqrtM else self.M)
 
-    def kernel_from_str(self, kernel_str, bandwidth, exponent):
+    def kernel_from_str(self, kernel_str, bandwidth, exponent, norm_p=2.):
         """
         Create kernel object from string specification.
         
@@ -282,6 +283,8 @@ class RFM(torch.nn.Module):
             return SumPowerLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         elif kernel_str in ['kermac_product_laplace', 'l1_kermac']:
             return KermacProductLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
+        elif kernel_str in ['kermac_lpq_laplace', 'lpq_kermac']:
+            return KermacLpqLaplaceKernel(bandwidth=bandwidth, q=exponent, p=norm_p)
         else:
             raise ValueError(f"Invalid kernel: {kernel_str}")
         

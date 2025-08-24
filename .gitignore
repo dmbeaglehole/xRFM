@@ -8,6 +8,7 @@ examples/cat_test.py
 examples/grouping_test.py
 examples/kdd.py
 examples/low_rank.ipynb
+examples/svd_test.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
