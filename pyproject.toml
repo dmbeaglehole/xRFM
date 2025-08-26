@@ -9,10 +9,10 @@ description = 'xRFM: Scalable and interpretable kernel methods for tabular data'
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
-keywords = ['tabular data', 'scikit-learn', 'machine learning', 'feature machine', 'recursive', 'tree-based']
+keywords = ["tabular data", "scikit-learn", "machine learning", "feature machine", "recursive", "tree-based"]
 authors = [
-    { name = "Daniel Beaglehole", email = "dbeaglehole@ucsd.edu" },
-    { name = "David Holzmüller" }, #, email = "a@b.org" },
+    { name = "Daniel Beaglehole" },
+    { name = "David Holzmüller" }
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
