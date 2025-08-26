@@ -106,6 +106,7 @@ def _train_and_predict(kernel, exponent, norm_p=None, bandwidth=5.0, seed=0):
 
 @pytest.mark.parametrize('exponent', [0.7, 1.0, 1.2, 1.4])
 @pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires GPU")
 def test_lpq_kermac_matches_l1_kermac_when_p_equals_exponent(exponent):
     # lpq_kermac with p=q should match l1_kermac with exponent=q
     preds_lpq = _train_and_predict(kernel='lpq_kermac', exponent=exponent, norm_p=exponent)
@@ -119,6 +120,7 @@ def test_lpq_kermac_matches_l1_kermac_when_p_equals_exponent(exponent):
 
 @pytest.mark.parametrize('exponent', [0.7, 1.0, 1.2, 1.4])
 @pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires GPU")
 def test_lpq_kermac_matches_l2_when_p_equals_2(exponent):
     # lpq_kermac with p=2 should match l2 with same exponent
     preds_lpq = _train_and_predict(kernel='lpq_kermac', exponent=exponent, norm_p=2.0)
