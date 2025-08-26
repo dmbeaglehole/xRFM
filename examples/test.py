@@ -20,11 +20,11 @@ n = 2187 #19115 # samples
 ntest = 313
 d = 50 #8036  # dimension
 
-bw = 15.5974677725666
-reg = 1.296977650551
-iters = 5
+bw = 10.
+reg = 1e-3
+iters = 3
 min_subset_size = 19115
-exponent = 0.8
+exponent = 1.1
 p = 1.1
 assert 0 < exponent <= p
 
@@ -40,12 +40,12 @@ y_test = fstar(X_test).to(DEVICE)
 
 xrfm_params = {
     'model': {
-        'kernel': "lpq_kermac", #l1_kermac", #"l1_kermac",
+        'kernel': "lpq_kermac", #l1_kermac", #"lpq_kermac", #"l1",
         'bandwidth': bw,
         'exponent': exponent,
         'norm_p': p,
         'diag': False,
-        'bandwidth_mode': "adaptive"
+        'bandwidth_mode': "constant"
     },
     'fit': {
         'reg': reg,

@@ -628,7 +628,6 @@ class KermacProductLaplaceKernel(Kernel):
 
         mask = (kernel_mat < (1-self.eps)).float()
         a_mat = a_mat * mask
-        print("Number of points masked in gradient computation", (1-mask).sum().int().item())
 
         xm = self._transform_m(x, mat)
         zm = self._transform_m(z, mat)
@@ -658,8 +657,12 @@ class KermacLpqLaplaceKernel(Kernel):
         available_memory = total_memory_possible - curr_mem_use
         return int(available_memory / (mem_constant*n*scalar_size))
 
-    def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
-        kernel_mat = kermac.cdist(self._transform_m(x, mat), self._transform_m(z, mat), p=self.p).squeeze(0)
+    def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None, 
+                                dist_mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if dist_mat is None:
+            kernel_mat = kermac.cdist(self._transform_m(x, mat), self._transform_m(z, mat), p=self.p).squeeze(0)
+        else:
+            kernel_mat = dist_mat.clone()
         kernel_mat.clamp_(min=0)
         
         kernel_mat.pow_(self.exponent)
@@ -670,7 +673,7 @@ class KermacLpqLaplaceKernel(Kernel):
         kernel_mat.exp_()
         return kernel_mat
     
-    def _get_kernel_matrix_categorical_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def _get_dist_matrix_categorical(self, x, z, mat):
         numerical_indices = self.numerical_indices # (n_num,)
         categorical_indices = self.categorical_indices # List of (d_cat_i,) for each categorical feature
         categorical_vectors = self.categorical_vectors # List of (d_cat_i, d_cat_i) for each categorical feature
@@ -685,7 +688,6 @@ class KermacLpqLaplaceKernel(Kernel):
                 kernel_mat.pow_(self.p)
             return kernel_mat
 
-        
         mat_num = get_sub_matrix(mat, numerical_indices)
         xnum = self._transform_m(x[:, numerical_indices], mat_num)
         znum = self._transform_m(z[:, numerical_indices], mat_num)
@@ -707,8 +709,17 @@ class KermacLpqLaplaceKernel(Kernel):
             for i in range(0, x.shape[0], batch_size):
                 kernel_mat[i:i+batch_size].add_(cat_embedding_kernel[x_cat[i:i+batch_size, None], z_cat[None, :]])
 
-        kernel_mat.clamp_(min=0)
-        kernel_mat.pow_(self.exponent / self.p) # undo p-power then exponentiate for bandwidth adaptation
+        return kernel_mat.clamp_(min=0).pow_(1 / self.p)
+        
+    
+    def _get_kernel_matrix_categorical_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None, 
+                                            dist_mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        
+        if dist_mat is None:
+            kernel_mat = self._get_dist_matrix_categorical(x, z, mat)
+        else:
+            kernel_mat = dist_mat.clone()
+        kernel_mat.pow_(self.exponent) # exponentiate for bandwidth adaptation
 
         if not self.is_adaptive_bandwidth:
             self._adapt_bandwidth(kernel_mat)
@@ -717,26 +728,27 @@ class KermacLpqLaplaceKernel(Kernel):
         return kernel_mat
 
     def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
-        if self.handle_categorical:
-            kernel_mat = self._get_kernel_matrix_categorical_impl(x, z, mat)
-        else:
-            kernel_mat = self._get_kernel_matrix_impl(x, z, mat)
-
+        
         xm = self._transform_m(x, mat)
         zm = self._transform_m(z, mat)
 
-        dist_mat = kermac.cdist(xm, zm, p=self.p).squeeze(0)
-        mask = (dist_mat < (1-self.eps)).float()
-
+        if self.handle_categorical:
+            dist_mat = self._get_dist_matrix_categorical(x, z, mat)
+            kernel_mat = self._get_kernel_matrix_categorical_impl(x, z, mat, dist_mat)
+        else:
+            dist_mat = kermac.cdist(xm, zm, p=self.p).squeeze(0)
+            kernel_mat = self._get_kernel_matrix_impl(x, z, mat, dist_mat)
+        
+        mask = (dist_mat >= self.eps).float()   
         dist_mat = torch.clamp(dist_mat, min=self.eps)
-        a_mat = -kernel_mat * self.exponent / (self.bandwidth ** self.exponent) / dist_mat.pow(self.exponent - self.p)
-
+        a_mat = -kernel_mat * self.exponent * dist_mat.pow(self.exponent - self.p) / (self.bandwidth ** self.exponent)
         a_mat = a_mat * mask
-        print("Number of points masked in gradient computation", (1-mask).sum().int().item())
+
+        del kernel_mat, dist_mat, mask
 
         xm = xm.T.contiguous()
         zm = zm.T.contiguous()
-        out = kermac.cdist_grad(a_mat, xm, coefs, zm, p=self.exponent)
+        out = kermac.cdist_grad(a_mat, xm, coefs, zm, p=self.p)
         return out.transpose(-2, -1).float()
 
         

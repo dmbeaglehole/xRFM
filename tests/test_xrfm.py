@@ -2,6 +2,7 @@ import pytest
 from sklearn.metrics import root_mean_squared_error, accuracy_score
 import torch
 from sklearn.model_selection import train_test_split
+import numpy as np
 
 from xrfm import xRFM
 
@@ -60,3 +61,67 @@ def test_classification(tuning_metric, classification_mode, n_classes):
     acc = accuracy_score(y_test, model.predict(X_test))
     if acc < 0.8:
         raise AssertionError(f'Accuracy was too small: {acc:g} is smaller than 0.8')
+
+
+def _make_regression_data(seed=0, n_train=256, n_val=128, d=8, device=None):
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    rng = torch.Generator(device=device)
+    rng.manual_seed(seed)
+    X = torch.randn(n_train + n_val, d, generator=rng, device=device)
+    y = (X[:, 0] ** 2 + 0.5 * X[:, 1])[:, None].float()
+    return X[:n_train], y[:n_train], X[n_train:], y[n_train:]
+
+
+def _train_and_predict(kernel, exponent, norm_p=None, bandwidth=5.0, seed=0):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    X_train, y_train, X_val, y_val = _make_regression_data(seed=seed, device=device)
+
+    rfm_params = {
+        'model': {
+            'kernel': kernel,
+            'bandwidth': bandwidth,
+            'exponent': exponent,
+            'norm_p': norm_p,
+            'diag': False,
+            'bandwidth_mode': 'constant'
+        },
+        'fit': {
+            'reg': 1e-4,
+            'iters': 3,
+            'verbose': False,
+            'early_stop_rfm': False,
+            'return_best_params': False
+        }
+    }
+
+    model = xRFM(rfm_params=rfm_params, device=device, min_subset_size=10_000, tuning_metric='mse', n_threads=1)
+    model.fit(X_train, y_train, X_val, y_val)
+    preds = model.predict(X_val)
+    return preds
+
+
+@pytest.mark.parametrize('exponent', [0.7, 1.0, 1.2, 1.4])
+def test_lpq_kermac_matches_l1_kermac_when_p_equals_exponent(exponent):
+    # lpq_kermac with p=q should match l1_kermac with exponent=q
+    preds_lpq = _train_and_predict(kernel='lpq_kermac', exponent=exponent, norm_p=exponent)
+    preds_l1 = _train_and_predict(kernel='l1_kermac', exponent=exponent)
+
+    print(f"preds_lpq: {preds_lpq.shape}, preds_l1: {preds_l1.shape}")
+    print(f"preds_lpq[:5]: {preds_lpq[:5]}, preds_l1[:5]: {preds_l1[:5]}")
+
+    np.testing.assert_allclose(preds_lpq, preds_l1, atol=5e-3)
+
+
+@pytest.mark.parametrize('exponent', [0.7, 1.0, 1.2, 1.4])
+def test_lpq_kermac_matches_l2_when_p_equals_2(exponent):
+    # lpq_kermac with p=2 should match l2 with same exponent
+    preds_lpq = _train_and_predict(kernel='lpq_kermac', exponent=exponent, norm_p=2.0)
+    preds_l2 = _train_and_predict(kernel='l2', exponent=exponent)
+
+    print(f"preds_lpq[:5]: {preds_lpq[:5]}, preds_l2[:5]: {preds_l2[:5]}")
+
+    np.testing.assert_allclose(preds_lpq, preds_l2, atol=5e-3)

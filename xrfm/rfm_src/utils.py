@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import time
 from scipy.linalg import sqrtm, fractional_matrix_power
 
 class SmoothClampedReLU(nn.Module):
@@ -47,7 +48,7 @@ def matrix_power(M, power):
     # else:
     #     raise ValueError(f"Invalid matrix shape for square root: {M.shape}")
     
-def stable_matrix_power(M, power, MAX_DIMENSIONS_FOR_SVD=6000):
+def stable_matrix_power(M, power, MAX_DIMENSIONS_FOR_SVD=5000):
     """
     Compute the power of a matrix.
     :param M: Matrix to power.
@@ -70,14 +71,17 @@ def stable_matrix_power(M, power, MAX_DIMENSIONS_FOR_SVD=6000):
             if scale > 0:
                 M = M / scale
 
+        M.diagonal().add_(1e-8)
         if M.shape[0] < MAX_DIMENSIONS_FOR_SVD:
             print("Using SVD")
-            M.diagonal().add_(1e-8)
             U, S, _ = torch.linalg.svd(M)
         else:
             print("Using SVD lowrank with q=", MAX_DIMENSIONS_FOR_SVD)
             print("M.shape", M.shape)
+            start_time = time.time()
             U, S, _ = torch.svd_lowrank(M, q=MAX_DIMENSIONS_FOR_SVD)
+            end_time = time.time()
+            print(f"Time taken for SVD lowrank: {end_time - start_time} seconds")
 
         S[S<0] = 0.
         return (U @ torch.diag(S**power) @ U.T).to(device=M.device, dtype=M.dtype)
