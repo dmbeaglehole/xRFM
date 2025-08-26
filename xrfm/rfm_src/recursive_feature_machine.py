@@ -5,7 +5,6 @@ import torch, numpy as np
 from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplaceKernel, LightLaplaceKernel
 from .kernels import KermacProductLaplaceKernel, KermacLpqLaplaceKernel
 from tqdm.contrib import tenumerate
-
 from .metrics import Metrics, Metric
 from .utils import matrix_power
 from .gpu_utils import with_env_var
