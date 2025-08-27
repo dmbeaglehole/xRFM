@@ -8,6 +8,7 @@ from tqdm.contrib import tenumerate
 from .metrics import Metrics, Metric
 from .utils import matrix_power
 from .gpu_utils import with_env_var
+# logistic solver is used indirectly inside fit_predictor_logistic via callback; no top-level import needed
 import time
 from typing import Union
 
@@ -481,6 +482,11 @@ class RFM(torch.nn.Module):
 
         self.centers = centers
 
+        # Route logistic solver to a dedicated IRLS method with validation early stopping
+        if solver == 'log_reg':
+            self.weights = self.fit_predictor_logistic(centers, targets, **kwargs)
+            return
+
         if self.fit_using_eigenpro:
             assert not self.label_centering, "EigenPro does not yet support label centering"
             if self.prefit_eigenpro:
@@ -498,6 +504,95 @@ class RFM(torch.nn.Module):
         else:
             self.weights = self.fit_predictor_lstsq(centers, targets, solver=solver)
 
+    def fit_predictor_logistic(self, centers, targets, X_val, y_val, **kwargs):
+        """
+        Fit kernel logistic regression using IRLS with validation early stopping.
+
+        Parameters
+        ----------
+        centers : torch.Tensor
+            Training centers of shape (n, d).
+        targets : torch.Tensor
+            Binary labels of shape (n, 1) or (n,) with values in {0,1} or {-1,1}.
+        X_val : torch.Tensor
+            Validation features.
+        y_val : torch.Tensor
+            Validation labels aligned with X_val.
+
+        Keyword Args
+        ------------
+        log_max_iters : int, default=6
+            Maximum number of IRLS steps (outer control). Each step calls a single-iteration Newton update.
+        lr : float, default=1.0
+            Learning rate for Newton updates.
+        tol : float, default=1e-6
+            Tolerance passed to the inner solver (not used when doing single-step updates).
+
+        Returns
+        -------
+        torch.Tensor
+            Learned dual coefficients alpha of shape (n, 1).
+        """
+
+        assert X_val is not None and y_val is not None, "X_val and y_val must be provided for logistic solver"
+
+        # Ensure tensors on device
+        if centers.device != self.device:
+            centers = centers.to(self.device)
+            targets = targets.to(self.device)
+        X_val = X_val.to(self.device)
+        y_val = y_val.to(self.device)
+
+        # Build Gram matrix once
+        K = self.kernel(centers, centers)
+
+        # IRLS control fully inside kernel_log_solve via callback
+        max_steps = kwargs.get('log_max_iters', 5)
+        lr = kwargs.get('lr', 1.0)
+        tol = kwargs.get('tol', 1e-6)
+
+        best_metric = float('inf') if self.should_minimize else float('-inf')
+        best_alphas = None
+        best_iter = -1
+
+        def _early_stop_cb(iteration, alpha, f):
+            # Temporarily attach weights for scoring
+            self.weights = alpha
+            val_metrics = self._compute_validation_metrics(centers, targets, X_val, y_val, iteration_num=iteration, **kwargs)
+            current = val_metrics[self.tuning_metric]
+
+            nonlocal best_metric, best_alphas, best_iter
+            if (not self.should_minimize and current > best_metric) or (self.should_minimize and current < best_metric):
+                best_metric = current
+                best_alphas = self.tensor_copy(self.weights)
+                best_iter = iteration
+
+            # Check early stopping w.r.t. best so far
+            if iteration > 0 and self._should_early_stop(current, best_metric, es_multiplier=1.):
+                if self.verbose:
+                    print(f"Logistic early stopping at IRLS step {iteration}")
+                return True
+            return False
+
+        from .kernel_log_reg import kernel_log_solve
+        print('-'*100)
+        print("Starting kernel log solve")
+        alpha = kernel_log_solve(
+            K, targets,
+            reg=float(self.reg) if self.reg is not None else 0.0,
+            max_iters=max_steps,
+            tol=tol,
+            lr=lr,
+            initial_alpha=None,
+            callback=_early_stop_cb,
+        )
+        print('-'*100)
+
+        # Choose best seen alpha if recorded; otherwise use final alpha
+        self.weights = (best_alphas.to(self.device) if best_alphas is not None else alpha)
+        self.best_iter = best_iter
+        return self.weights
+    
     def fit_predictor_lstsq(self, centers, targets, solver='solve'):
         """
         Fit kernel regression using direct least squares solution.
@@ -528,6 +623,8 @@ class RFM(torch.nn.Module):
 
         kernel_matrix = self.kernel(centers, centers)  
 
+        # Apply direct K diagonal regularization only for closed-form LSTSQ solvers.
+        # For logistic IRLS, regularization is handled inside the Newton step as (WK + reg I).
         if self.reg > 0:
             kernel_matrix.diagonal().add_(self.reg)
         
@@ -827,12 +924,14 @@ class RFM(torch.nn.Module):
             print(f"{prefix} Val {metric.display_name}: {val_metrics[self.tuning_metric]:.4f}")
         return val_metrics
 
-    def _should_early_stop(self, current_metric, best_metric):
+    def _should_early_stop(self, current_metric, best_metric, es_multiplier=None):
+        if es_multiplier is None:
+            es_multiplier = self.early_stop_multiplier
         """Check if early stopping criteria is met."""
         if self.should_minimize:
-            return current_metric > best_metric * self.early_stop_multiplier
+            return current_metric > best_metric * es_multiplier
         else:
-            return current_metric < best_metric / self.early_stop_multiplier
+            return current_metric < best_metric / es_multiplier
 
     # TODO: to prevent OOM issue due to memory fragmentation but doesn't actually set the environment variable!
     @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True") 
@@ -939,7 +1038,7 @@ class RFM(torch.nn.Module):
 
         # Handle final iteration if no early stopping occurred
         if not early_stopped:
-            self.fit_predictor(X_train, y_train, X_val=X_val, y_val=y_val, bs=bs, **kwargs)        
+            self.fit_predictor(X_train, y_train, X_val=X_val, y_val=y_val, bs=bs, solver=solver, **kwargs)        
             final_val_metrics = self._compute_validation_metrics(X_train, y_train, X_val, y_val, is_final=True, **kwargs)
 
             if return_best_params:

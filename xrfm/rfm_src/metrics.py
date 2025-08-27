@@ -82,7 +82,7 @@ class Accuracy(Metric):
     required_quantities = ['y_true_class', 'y_pred_proba']
 
     def _compute(self, **kwargs) -> float:
-        nz = torch.count_nonzero(kwargs['y_true_class'] != kwargs['y_pred_proba'].argmax(dim=-1))
+        nz = torch.count_nonzero(kwargs['y_true_class'] == kwargs['y_pred_proba'].argmax(dim=-1))
         return (nz / kwargs['y_pred_proba'].shape[-2]).item()
 
 
