@@ -443,8 +443,8 @@ class ProductLaplaceKernel(Kernel):
     def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
         xm = self._transform_m(x, mat)
         zm = self._transform_m(z, mat)
-        def forward_func(z):
-            dists = torch.cdist(xm, zm, p=self.exponent) ** self.exponent
+        def forward_func(zm_):
+            dists = torch.cdist(xm, zm_, p=self.exponent) ** self.exponent
             factor = -((1. / self.bandwidth) ** self.exponent)
             # this is \sum_j f(z_j), so the derivative wrt z will be jacobian(f)(z_j) for all z_j
             return coefs @ torch.exp(factor * (dists * (dists >= self.eps))).sum(dim=1)

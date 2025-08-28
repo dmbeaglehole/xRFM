@@ -94,7 +94,8 @@ def _train_and_predict(kernel, exponent, norm_p=None, bandwidth=5.0, seed=0):
             'iters': 3,
             'verbose': False,
             'early_stop_rfm': False,
-            'return_best_params': False
+            'return_best_params': False,
+            'verbose': True
         }
     }
 
@@ -129,3 +130,14 @@ def test_lpq_kermac_matches_l2_when_p_equals_2(exponent):
     print(f"preds_lpq[:5]: {preds_lpq[:5]}, preds_l2[:5]: {preds_l2[:5]}")
 
     np.testing.assert_allclose(preds_lpq, preds_l2, atol=5e-3)
+
+
+@pytest.mark.parametrize('exponent', [0.8, 1.0, 1.2])
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires GPU")
+def test_l1_kermac_matches_l1(exponent):
+
+    preds_l1 = _train_and_predict(kernel='l1', exponent=exponent)
+    preds_l1_kermac = _train_and_predict(kernel='l1_kermac', exponent=exponent)
+
+    np.testing.assert_allclose(preds_l1, preds_l1_kermac, atol=1e-1)
