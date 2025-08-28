@@ -3,7 +3,8 @@ import torch
 import torch.nn.functional as F
 
 class ClassificationConverter:
-    def __init__(self, mode: Literal['zero_one', 'prevalence'], n_classes: int, labels: Optional[torch.Tensor] = None):
+    def __init__(self, mode: Literal['zero_one', 'prevalence'], n_classes: int, 
+                 labels: Optional[torch.Tensor] = None, init_from_params: bool = False):
         """
         Args:
             mode:
@@ -21,6 +22,9 @@ class ClassificationConverter:
         assert n_classes >= 2
         self.mode = mode
         self.n_classes = n_classes
+
+        if init_from_params:
+            return
 
         if self.mode == 'prevalence':
             if labels is None:

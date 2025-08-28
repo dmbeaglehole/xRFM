@@ -837,13 +837,12 @@ class RFM(torch.nn.Module):
         - Sets self.keep_device based on dimensionality vs sample size ratio
         """
 
-        if self.tuning_metric == 'accuracy' and self.early_stop_rfm:
-            if n <= 30_000:
-                self.early_stop_multiplier = min(self.early_stop_multiplier, 1.003)
-            else:
-                self.early_stop_multiplier = min(self.early_stop_multiplier, 1.006)
-            print(f"More aggressive early stop multiplier for accuracy: {self.early_stop_multiplier}")
-            
+        # if self.tuning_metric == 'accuracy' and self.early_stop_rfm:
+        #     if n <= 30_000:
+        #         self.early_stop_multiplier = min(self.early_stop_multiplier, 1.01)
+        #     else:
+        #         self.early_stop_multiplier = min(self.early_stop_multiplier, 1.02)
+        #     print(f"More aggressive early stop multiplier for accuracy: {self.early_stop_multiplier}")
 
         self.keep_device = d > n # keep previous Ms on GPU if more features than samples
         ep_epochs = 8
@@ -1064,8 +1063,8 @@ class RFM(torch.nn.Module):
 
         return Ms if return_Ms else None
     
-    def _compute_optimal_M_batch(self, n, c, d, scalar_size=4, mem_constant=2., max_batch_size=10_000, 
-                            max_cheap_batch_size=20_000, light_kernels=Union[LaplaceKernel, LightLaplaceKernel]):
+    def _compute_optimal_M_batch(self, n, c, d, scalar_size=4, mem_constant=2., max_batch_size=10_000, max_cheap_batch_size=20_000, 
+                            light_kernels=Union[LaplaceKernel, LightLaplaceKernel, KermacLpqLaplaceKernel, KermacProductLaplaceKernel]):
         """Computes the optimal batch size for AGOP."""
         if self.device in ['cpu', torch.device('cpu')] or isinstance(self.kernel_obj, light_kernels):
             # cpu and light kernels are less memory intensive, use a single batch

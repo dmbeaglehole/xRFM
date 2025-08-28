@@ -131,6 +131,7 @@ class xRFM:
         self.classification_mode = classification_mode
         self.time_limit_s = time_limit_s
         self.n_threads = n_threads
+        self.extra_rfm_params_ = {}
 
         if random_state is not None:
             random.seed(random_state)
@@ -978,6 +979,18 @@ class xRFM:
         """
         self.rfm_params = state_dict['rfm_params']
         self.categorical_info = state_dict['categorical_info']
+        self.n_classes_ = state_dict['n_classes']
+        self.extra_rfm_params_ = state_dict['extra_rfm_params_']
+
+        if self.n_classes_ > 0:
+            self.classification_mode = state_dict['classification_mode']
+            self.class_converter_ = ClassificationConverter(mode=self.classification_mode,
+                                                            n_classes=self.n_classes_,
+                                                            init_from_params=True)
+            self.class_converter_._prior = state_dict['class_converter']['_prior']
+            self.class_converter_._C = state_dict['class_converter']['_C']
+            self.class_converter_._invA = state_dict['class_converter']['_invA']
+            self.extra_rfm_params_['class_converter'] = self.class_converter_
 
         self._build_leaf_models_from_param_trees(state_dict['param_trees'])
 
@@ -1006,7 +1019,6 @@ class xRFM:
             List of parameter trees from the state dictionary
         """
         self.trees = []
-
         def set_leaf_model_single_tree(tree):
             if tree['type'] == 'leaf':
                 leaf_model = RFM(**self.rfm_params['model'],
@@ -1048,11 +1060,24 @@ class xRFM:
         param_trees = []
         for tree in self.trees:
             param_trees.append(get_param_tree(tree, is_root=True))
-        return {
+        state_dict = {
             'rfm_params': self.rfm_params,
             'categorical_info': self.categorical_info,
             'param_trees': param_trees,
+            'n_classes': self.n_classes_,
         }
+        
+        clean_extra_rfm_params = self.extra_rfm_params_.copy()
+        if self.n_classes_ > 0:
+            state_dict['classification_mode'] = self.classification_mode
+            state_dict['class_converter'] = {
+                '_prior': self.class_converter_._prior,
+                '_C': self.class_converter_._C,
+                '_invA': self.class_converter_._invA
+            }
+            clean_extra_rfm_params.pop('class_converter')
+        state_dict['extra_rfm_params_'] = clean_extra_rfm_params
+        return state_dict
 
 
     def _get_agop_on_subset(self, X, y, subset_size=50_000, time_limit_s=None):

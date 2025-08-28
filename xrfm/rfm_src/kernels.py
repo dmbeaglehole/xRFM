@@ -94,10 +94,8 @@ class Kernel:
     def get_agop(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor,
                  mat: Optional[torch.Tensor] = None, center_grads: bool = False) -> torch.Tensor:
         if self.handle_categorical:
-            print("Getting agop for categorical")
             return self.get_agop_categorical(x, z, coefs, mat, center_grads)
         else:
-            print("Getting agop for numerical")
             # see get_function_grads
             f_grads = self.get_function_grads(x, z, coefs, mat)
             # merge output and n_z dims
