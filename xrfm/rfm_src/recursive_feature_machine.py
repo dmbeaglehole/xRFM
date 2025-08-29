@@ -212,7 +212,7 @@ class RFM(torch.nn.Module):
         self.class_converter = class_converter
         self.time_limit_s = time_limit_s
         self.solver = solver
-        
+
         if categorical_info is not None and fast_categorical:
             self.set_categorical_indices(**categorical_info)
 
@@ -446,7 +446,7 @@ class RFM(torch.nn.Module):
 
         return best_metric, best_alphas, best_M, best_sqrtM, best_iter, best_bandwidth
         
-    def fit_predictor(self, centers, targets, bs=None, lr_scale=1, solver='solve', **kwargs):
+    def fit_predictor(self, centers, targets, bs=None, lr_scale=1, **kwargs):
         """
         Fit the kernel regression predictor using either least squares or EigenPro.
         
@@ -460,8 +460,6 @@ class RFM(torch.nn.Module):
             Batch size for EigenPro optimization. If None, uses default.
         lr_scale : float, default=1
             Learning rate scale factor for EigenPro
-        solver : str, default='solve'
-            Solver for least squares: 'solve', 'cholesky', or 'lu'
         **kwargs : dict
             Additional arguments passed to the predictor fitting methods
             
@@ -484,7 +482,7 @@ class RFM(torch.nn.Module):
         self.centers = centers
 
         # Route logistic solver to a dedicated IRLS method with validation early stopping
-        if solver == 'log_reg':
+        if self.solver == 'log_reg':
             self.weights = self.fit_predictor_logistic(centers, targets, **kwargs)
             return
 
@@ -494,7 +492,7 @@ class RFM(torch.nn.Module):
                 random_indices = torch.randperm(centers.shape[0])[:self.max_lstsq_size]
                 if self.verbose:
                     print(f"Prefitting Eigenpro with {len(random_indices)} points")
-                sub_weights = self.fit_predictor_lstsq(centers[random_indices], targets[random_indices], solver=solver)
+                sub_weights = self.fit_predictor_lstsq(centers[random_indices], targets[random_indices])
                 initial_weights = torch.zeros_like(targets)
                 initial_weights[random_indices] = sub_weights.to(targets.device, dtype=targets.dtype)
             else:
@@ -503,7 +501,7 @@ class RFM(torch.nn.Module):
             self.weights = self.fit_predictor_eigenpro(centers, targets, bs=bs, lr_scale=lr_scale, 
                                                        initial_weights=initial_weights, **kwargs)
         else:
-            self.weights = self.fit_predictor_lstsq(centers, targets, solver=solver)
+            self.weights = self.fit_predictor_lstsq(centers, targets)
 
     def fit_predictor_logistic(self, centers, targets, X_val, y_val, **kwargs):
         """
@@ -594,7 +592,7 @@ class RFM(torch.nn.Module):
         self.best_iter = best_iter
         return self.weights
     
-    def fit_predictor_lstsq(self, centers, targets, solver='solve'):
+    def fit_predictor_lstsq(self, centers, targets):
         """
         Fit kernel regression using direct least squares solution.
         
@@ -629,14 +627,13 @@ class RFM(torch.nn.Module):
         if self.reg > 0:
             kernel_matrix.diagonal().add_(self.reg)
         
-        
         try:
-            if solver == 'solve':
+            if self.solver == 'solve':
                 out = torch.linalg.solve(kernel_matrix, targets)
-            elif solver == 'cholesky':
+            elif self.solver == 'cholesky':
                 L = torch.linalg.cholesky(kernel_matrix, out=kernel_matrix)
                 out = torch.cholesky_solve(targets, L)
-            elif solver == 'lu':
+            elif self.solver == 'lu':
                 P, L, U = torch.linalg.lu(kernel_matrix)
                 out = torch.linalg.lu_solve(P, L, U, targets)
         except Exception as e:
@@ -1006,8 +1003,7 @@ class RFM(torch.nn.Module):
 
             start = time.time()
             self.fit_predictor(X_train, y_train, X_val=X_val, y_val=y_val, 
-                               bs=bs, lr_scale=lr_scale, solver=solver, 
-                               **kwargs)
+                               bs=bs, lr_scale=lr_scale, **kwargs)
                         
             # Compute validation metrics
             val_metrics = self._compute_validation_metrics(X_train, y_train, X_val, y_val, iteration_num=i, M_batch_size=M_batch_size, **kwargs)
@@ -1043,7 +1039,7 @@ class RFM(torch.nn.Module):
 
         # Handle final iteration if no early stopping occurred
         if not early_stopped:
-            self.fit_predictor(X_train, y_train, X_val=X_val, y_val=y_val, bs=bs, solver=solver, **kwargs)        
+            self.fit_predictor(X_train, y_train, X_val=X_val, y_val=y_val, bs=bs, **kwargs)        
             final_val_metrics = self._compute_validation_metrics(X_train, y_train, X_val, y_val, is_final=True, **kwargs)
 
             if return_best_params:
