@@ -84,10 +84,7 @@ def kernel_log_solve(kernel_matrix: torch.Tensor,
         A = w * K 
         A.diagonal().add_(reg)
 
-        start_time = time.time()
         delta_alpha = -0.5 * torch.linalg.solve(A, b2)
-        end_time = time.time()
-        print(f"Time taken for solve: {end_time - start_time} seconds")
 
         # Damped update and refresh f = K α
         alpha = alpha + lr * delta_alpha
