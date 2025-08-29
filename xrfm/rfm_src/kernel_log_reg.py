@@ -1,7 +1,5 @@
 import torch
-
-def _sigmoid(x: torch.Tensor) -> torch.Tensor:
-    return torch.sigmoid(x)
+import time
 
 def _ensure_2d_column(t: torch.Tensor) -> torch.Tensor:
     if t.dim() == 1:
@@ -26,8 +24,7 @@ def kernel_log_solve(kernel_matrix: torch.Tensor,
     kernel_matrix : torch.Tensor
         Gram matrix K of shape (n, n). Should be symmetric positive semi-definite.
     targets : torch.Tensor
-        Labels of shape (n,) or (n, 1). Values in {0,1} preferred; if in {-1,1},
-        they are internally mapped to {0,1}.
+        Labels of shape (n,) or (n, 1). Values in {0,1} expected.
     reg : float, default=0.0
         Ridge regularization strength applied to the total function.
     max_iters : int, default=6
@@ -71,12 +68,10 @@ def kernel_log_solve(kernel_matrix: torch.Tensor,
         alpha = torch.zeros((n, 1), device=device, dtype=dtype)
         f = torch.zeros((n, 1), device=device, dtype=dtype)
 
-    eye = torch.eye(n, device=device, dtype=dtype)
-
     prev_f = f
 
     for i in range(max_iters):
-        p = _sigmoid(f)
+        p = torch.sigmoid(f)
         # Per the derivation: W = diag(0.5 * ∂^2ℓ/∂F^2) = 0.5 * p(1-p)
         w = (0.5 * p * (1.0 - p)).clamp_min(1e-12)
 
@@ -86,9 +81,13 @@ def kernel_log_solve(kernel_matrix: torch.Tensor,
         b2 = b + (2.0 * reg) * alpha
 
         # Solve for the Newton/boosting increment: Δα = -0.5 * (W K + λ I)^{-1} b2
-        WK = w * K  # each row i scaled by w_i
-        A = WK + reg * eye
+        A = w * K 
+        A.diagonal().add_(reg)
+
+        start_time = time.time()
         delta_alpha = -0.5 * torch.linalg.solve(A, b2)
+        end_time = time.time()
+        print(f"Time taken for solve: {end_time - start_time} seconds")
 
         # Damped update and refresh f = K α
         alpha = alpha + lr * delta_alpha

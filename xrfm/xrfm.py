@@ -981,6 +981,7 @@ class xRFM:
         self.categorical_info = state_dict['categorical_info']
         self.n_classes_ = state_dict['n_classes']
         self.extra_rfm_params_ = state_dict['extra_rfm_params_']
+        self.solver = state_dict.get('solver', None)
 
         if self.n_classes_ > 0:
             self.classification_mode = state_dict['classification_mode']
@@ -990,6 +991,7 @@ class xRFM:
             self.class_converter_._prior = state_dict['class_converter']['_prior']
             self.class_converter_._C = state_dict['class_converter']['_C']
             self.class_converter_._invA = state_dict['class_converter']['_invA']
+            self.class_converter_._numerical_type = state_dict['class_converter']['_numerical_type']
             self.extra_rfm_params_['class_converter'] = self.class_converter_
 
         self._build_leaf_models_from_param_trees(state_dict['param_trees'])
@@ -1066,6 +1068,11 @@ class xRFM:
             'param_trees': param_trees,
             'n_classes': self.n_classes_,
         }
+
+        if 'solver' in self.rfm_params['fit']:
+            state_dict['solver'] = self.rfm_params['fit']['solver']
+        if 'solver' in self.rfm_params['model']:
+            state_dict['solver'] = self.rfm_params['model']['solver']
         
         clean_extra_rfm_params = self.extra_rfm_params_.copy()
         if self.n_classes_ > 0:
@@ -1073,7 +1080,8 @@ class xRFM:
             state_dict['class_converter'] = {
                 '_prior': self.class_converter_._prior,
                 '_C': self.class_converter_._C,
-                '_invA': self.class_converter_._invA
+                '_invA': self.class_converter_._invA,
+                '_numerical_type': self.class_converter_._numerical_type
             }
             clean_extra_rfm_params.pop('class_converter')
         state_dict['extra_rfm_params_'] = clean_extra_rfm_params

@@ -81,7 +81,7 @@ class RFM(torch.nn.Module):
 
     def __init__(self, kernel: Union[Kernel, str], iters=5, bandwidth=10., exponent=1., norm_p=None, bandwidth_mode='constant', 
                  agop_power=0.5, device=None, diag=False, verbose=True, mem_gb=None, tuning_metric='mse', 
-                 categorical_info=None, fast_categorical=False, class_converter=None, time_limit_s=None):
+                 categorical_info=None, fast_categorical=False, class_converter=None, time_limit_s=None, solver='solve'):
         """
         Parameters
         ----------
@@ -211,6 +211,7 @@ class RFM(torch.nn.Module):
         self.use_sqrtM = self.kernel_obj.use_sqrtM
         self.class_converter = class_converter
         self.time_limit_s = time_limit_s
+        self.solver = solver
         
         if categorical_info is not None and fast_categorical:
             self.set_categorical_indices(**categorical_info)
@@ -893,7 +894,7 @@ class RFM(torch.nn.Module):
     
     def _initialize_fit_parameters(self, iters, method, reg, verbose, M_batch_size, total_points_to_sample, 
                                    ep_epochs, tuning_metric, early_stop_rfm, early_stop_multiplier, 
-                                   center_grads, prefit_eigenpro, **kwargs):
+                                   center_grads, prefit_eigenpro, solver, **kwargs):
         """Initialize parameters for the fit method."""
         self.verbose = verbose if verbose is not None else self.verbose
         self.fit_using_eigenpro = (method.lower()=='eigenpro')
@@ -908,7 +909,12 @@ class RFM(torch.nn.Module):
         self.early_stop_rfm = early_stop_rfm
         self.early_stop_multiplier = early_stop_multiplier
         self.center_grads = center_grads
+        self.solver = solver if solver is not None else self.solver
         self.top_k = kwargs.get('top_k', None)
+
+        if self.solver == 'log_reg':
+            self.class_converter._numerical_type = 'logit_diff'
+            
         assert 'diag' not in kwargs, "diag should be set in the constructor"
 
     def _compute_validation_metrics(self, X_train, y_train, X_val, y_val, iteration_num=None, is_final=False, M_batch_size=None, **kwargs):
@@ -936,7 +942,7 @@ class RFM(torch.nn.Module):
     @with_env_var("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True") 
     def fit(self, train_data, val_data=None, iters=None, method='lstsq', reg=None, center_grads=False,
             verbose=False, M_batch_size=None, ep_epochs=None, return_best_params=True, bs=None, 
-            return_Ms=False, lr_scale=1, total_points_to_sample=None, solver='solve', 
+            return_Ms=False, lr_scale=1, total_points_to_sample=None, solver=None, 
             tuning_metric=None, prefit_eigenpro=True, early_stop_rfm=True, early_stop_multiplier=1.1, 
             callback=None, **kwargs):
         """
@@ -960,7 +966,7 @@ class RFM(torch.nn.Module):
         # Initialize parameters
         self._initialize_fit_parameters(iters, method, reg, verbose, M_batch_size, total_points_to_sample,
                                        ep_epochs, tuning_metric, early_stop_rfm, early_stop_multiplier,
-                                       center_grads, prefit_eigenpro, **kwargs)
+                                       center_grads, prefit_eigenpro, solver, **kwargs)
         
         
 
@@ -1221,4 +1227,8 @@ class RFM(torch.nn.Module):
         - Inherits batch processing and device management from predict() method
         """
         predictions = self.predict(samples) 
+        if self.solver == 'log_reg':
+            assert self.class_converter.mode == 'zero_one'
+            predictions = torch.sigmoid(predictions)
+            eps = 1e-10
         return self.class_converter.numerical_to_probas(predictions, eps=eps)

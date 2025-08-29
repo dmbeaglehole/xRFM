@@ -22,6 +22,7 @@ class ClassificationConverter:
         assert n_classes >= 2
         self.mode = mode
         self.n_classes = n_classes
+        self._numerical_type = None
 
         if init_from_params:
             return
@@ -124,5 +125,8 @@ class ClassificationConverter:
         Returns:
             labels: (N,), dtype=torch.long
         """
+        if self._numerical_type == 'logit_diff' and self.n_classes==2:
+            assert self.mode == 'zero_one'
+            num = torch.sigmoid(num)
         probs = self.numerical_to_probas(num)
         return probs.argmax(dim=-1)
