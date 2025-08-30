@@ -110,6 +110,101 @@ model = xRFM(
 )
 ```
 
+## Recommended Preprocessing
+
+- **Standardize numerical columns** using a scaler (e.g., `StandardScaler`).
+- **One-hot encode categorical columns** and pass their metadata via `categorical_info`.
+- **Do not standardize one-hot categorical features.** Use identity matrices for `categorical_vectors`.
+
+### Example (scikit-learn)
+
+```python
+import numpy as np
+import torch
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.model_selection import train_test_split
+
+# Assume a pandas DataFrame `df` with:
+# - numerical feature columns in `num_cols`
+# - categorical feature columns in `cat_cols`
+# - target column name in `target_col`
+
+# Split
+train_df, test_df = train_test_split(df, test_size=0.2, random_state=0)
+train_df, val_df = train_test_split(train_df, test_size=0.2, random_state=0)
+
+# Fit preprocessors on train only
+scaler = StandardScaler()
+ohe = OneHotEncoder(sparse=False, handle_unknown='ignore')
+
+X_num_train = scaler.fit_transform(train_df[num_cols])
+X_num_val = scaler.transform(val_df[num_cols])
+X_num_test = scaler.transform(test_df[num_cols])
+
+X_cat_train = ohe.fit_transform(train_df[cat_cols])
+X_cat_val = ohe.transform(val_df[cat_cols])
+X_cat_test = ohe.transform(test_df[cat_cols])
+
+# Concatenate: numerical block first, then categorical block
+X_train = np.hstack([X_num_train, X_cat_train]).astype(np.float32)
+X_val = np.hstack([X_num_val, X_cat_val]).astype(np.float32)
+X_test = np.hstack([X_num_test, X_cat_test]).astype(np.float32)
+
+y_train = train_df[target_col].to_numpy().astype(np.float32)
+y_val = val_df[target_col].to_numpy().astype(np.float32)
+y_test = test_df[target_col].to_numpy().astype(np.float32)
+
+# Build categorical_info (indices are relative to the concatenated X)
+n_num = X_num_train.shape[1]
+categorical_indices = []
+categorical_vectors = []
+start = n_num
+for cats in ohe.categories_:
+    cat_len = len(cats)
+    idxs = torch.arange(start, start + cat_len, dtype=torch.long)
+    categorical_indices.append(idxs)
+    categorical_vectors.append(torch.eye(cat_len, dtype=torch.float32))  # identity; do not standardize
+    start += cat_len
+
+numerical_indices = torch.arange(0, n_num, dtype=torch.long)
+
+categorical_info = dict(
+    numerical_indices=numerical_indices,
+    categorical_indices=categorical_indices,
+    categorical_vectors=categorical_vectors,
+)
+
+# Train xRFM with categorical_info
+from xrfm import xRFM
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+rfm_params = {
+    'model': {
+        'kernel': 'product_laplace',
+        'bandwidth': 10.0,
+        'exponent': 1.0,
+        'diag': False,
+        'bandwidth_mode': 'constant',
+    },
+    'fit': {
+        'reg': 1e-3,
+        'iters': 3,
+        'verbose': False,
+        'early_stop_rfm': True,
+    }
+}
+
+model = xRFM(
+    rfm_params=rfm_params,
+    device=device,
+    tuning_metric='mse',
+    categorical_info=categorical_info,
+)
+
+model.fit(X_train, y_train, X_val, y_val)
+y_pred = model.predict(X_test)
+```
+
 ## File Structure
 
 ### Core Files

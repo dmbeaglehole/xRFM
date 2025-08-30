@@ -9,7 +9,7 @@ def _ensure_2d_column(t: torch.Tensor) -> torch.Tensor:
 def kernel_log_solve(kernel_matrix: torch.Tensor,
                      targets: torch.Tensor,
                      reg: float = 0.0,
-                     max_iters: int = 5,
+                     max_iters: int = 7,
                      tol: float = 5e-3,
                      lr: float = 1.0,
                      initial_alpha: torch.Tensor = None,

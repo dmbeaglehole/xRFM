@@ -546,7 +546,7 @@ class RFM(torch.nn.Module):
         K = self.kernel(centers, centers)
 
         # IRLS control fully inside kernel_log_solve via callback
-        max_steps = kwargs.get('log_max_iters', 5)
+        max_steps = kwargs.get('log_max_iters', 7)
         lr = kwargs.get('lr', 1.0)
         tol = kwargs.get('tol', 1e-6)
 
@@ -560,18 +560,22 @@ class RFM(torch.nn.Module):
             val_metrics = self._compute_validation_metrics(centers, targets, X_val, y_val, iteration_num=iteration, **kwargs)
             current = val_metrics[self.tuning_metric]
 
+            # Check early stopping w.r.t. best so far
             nonlocal best_metric, best_alphas, best_iter
+            if iteration > 0 and self._should_early_stop(current, best_metric, es_multiplier=0.9995):
+                if self.verbose:
+                    print(f"Logistic early stopping at IRLS step {iteration}")
+                should_stop = True
+            else:
+                should_stop = False
+            
             if (not self.should_minimize and current > best_metric) or (self.should_minimize and current < best_metric):
                 best_metric = current
                 best_alphas = self.tensor_copy(self.weights)
                 best_iter = iteration
+            
+            return should_stop
 
-            # Check early stopping w.r.t. best so far
-            if iteration > 0 and self._should_early_stop(current, best_metric, es_multiplier=1.):
-                if self.verbose:
-                    print(f"Logistic early stopping at IRLS step {iteration}")
-                return True
-            return False
 
         from .kernel_log_reg import kernel_log_solve
         print('-'*100)
