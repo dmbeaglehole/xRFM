@@ -263,11 +263,11 @@ Base Recursive Feature Machine implementation.
 | Kernel | String ID | Description |
 |--------|-----------|-------------|
 | `LaplaceKernel` | `'laplace'`, `'l2'` | Standard Laplace kernel |
+| `KermacProductLaplaceKernel` | `'l1_kermac'` | High-performance Product of Laplace kernels on GPU (requires install with `[cu11]` or `[cu12]`) |
+| `KermacLpqLaplaceKernel` | `'lpq_kermac'` | High-performance p-norm, q-exponent Laplace kernels on GPU (requires install with `[cu11]` or `[cu12]`) |
 | `LightLaplaceKernel` | `'l2_high_dim'`, `'l2_light'` | Memory-efficient Laplace kernel |
-| `ProductLaplaceKernel` | `'product_laplace'`, `'l1'` | Product of Laplace kernels |
+| `ProductLaplaceKernel` | `'product_laplace'`, `'l1'` | Product of Laplace kernels (not recommended, use Kermac if possible)|
 | `SumPowerLaplaceKernel` | `'sum_power_laplace'`, `'l1_power'` | Sum of powered Laplace kernels |
-| `KermacProductLaplaceKernel` | `'l1_kermac'` | High-performance Product of Laplace kernels (requires install with `[cu11]` or `[cu12]`) |
-| `KermacLpqLaplaceKernel` | `'lpq_kermac'` | High-performance p-norm, q-exponent Laplace kernels (requires install with `[cu11]` or `[cu12]`) |
 
 
 ### Splitting Methods
