@@ -16,14 +16,14 @@ def fstar(X):
 def mse_loss(y_pred, y_true):
     return (y_pred - y_true).pow(2).mean()
 
-n = 60_000 #19115 # samples
+n = 200 #19115 # samples
 ntest = 313
 d = 20 #8036  # dimension
 
 tuning_metric = 'accuracy'
 bw = 10.
 reg = 1e-3
-iters = 4
+iters = 8
 min_subset_size = 60000
 exponent = 1.
 p = 2.
@@ -60,22 +60,25 @@ xrfm_params = {
         'bandwidth_mode': "constant",
     },
     'fit': {
-        'solver': 'log_reg', #'log_reg', 'solve
+        'solver': 'solve', #'log_reg', 'solve
         'reg': reg,
         'iters': iters,
         'M_batch_size': M_batch_size,
-        'verbose': True,
         'early_stop_rfm': True,
+        'verbose': True,
     }
 }
 
 
-xrfm_model = xRFM(xrfm_params, device=DEVICE, min_subset_size=min_subset_size, 
-                  tuning_metric=tuning_metric, 
-                  split_method='top_vector_agop_on_subset')
+xrfm_model = xRFM(
+                    xrfm_params, 
+                    device=DEVICE, min_subset_size=min_subset_size, 
+                    tuning_metric=tuning_metric, 
+                    split_method='top_vector_agop_on_subset'
+                )
 
 start_time = time.time()
-xrfm_model.fit(X_train, y_train, X_test, y_test)
+xrfm_model.fit(X_train, y_train, X_test, y_test)#, verbose=True)
 end_time = time.time()
 
 y_test = y_test.reshape(-1)
@@ -83,10 +86,10 @@ y_pred = xrfm_model.predict(X_test).reshape(-1)
 print("y_pred[:5]", y_pred[:5])
 acc = np.mean(y_pred == y_test)
 print(f'xRFM time: {end_time-start_time:g} s, acc: {acc}')
-print('-'*150)
+# print('-'*150)
 
-y_pred = xrfm_model.predict_proba(X_test).argmax(axis=-1)
-acc = np.mean(y_pred == y_test)
-print(f'xRFM 2 acc: {acc:.4f}')
-print('-'*150)
+# y_pred = xrfm_model.predict_proba(X_test).argmax(axis=-1)
+# acc = np.mean(y_pred == y_test)
+# print(f'xRFM 2 acc: {acc:.4f}')
+# print('-'*150)
 

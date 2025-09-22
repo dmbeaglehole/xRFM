@@ -160,7 +160,6 @@ class xRFM:
                     "reg": 1e-3,
                     "iters": 0,
                     "early_stop_rfm": False,
-                    "verbose": False
                 }
             }
         else:
@@ -169,6 +168,7 @@ class xRFM:
         if self.rfm_params is None:
             self.rfm_params = self.default_rfm_params
             self.rfm_params['fit']['return_best_params'] = True
+            self.rfm_params['fit']['iters'] = 5
 
     def tree_copy(self, tree):
         """
@@ -409,7 +409,7 @@ class xRFM:
         return left_mask, right_mask
 
     def _build_tree(self, X, y, X_val, y_val, train_indices=None, depth=0, avg_M=None, is_root=False,
-                    time_limit_s=None):
+                    time_limit_s=None, **kwargs):
         """
         Recursively build the tree by splitting data based on random projections.
         
@@ -453,7 +453,7 @@ class xRFM:
                         categorical_info=self.categorical_info, device=self.device, time_limit_s=time_limit_s,
                         **self.extra_rfm_params_)
 
-            model.fit((X, y), (X_val, y_val), **self.rfm_params['fit'], callback=self.callback)
+            model.fit((X, y), (X_val, y_val), **self.rfm_params['fit'], callback=self.callback, **kwargs)
             return {'type': 'leaf', 'model': model, 'train_indices': train_indices, 'is_root': is_root}
 
         # Generate projection vector
@@ -523,14 +523,16 @@ class xRFM:
                                      avg_M=avg_M,
                                      is_root=False,
                                      time_limit_s=None if time_limit_s is None
-                                     else 0.5 * (time_limit_s - (time.time() - start_time)))
+                                     else 0.5 * (time_limit_s - (time.time() - start_time)),
+                                     **kwargs)
         right_tree = self._build_tree(X_right, y_right, X_val_right, y_val_right,
                                       train_indices=train_indices[right_mask],
                                       depth=depth + 1,
                                       avg_M=avg_M,
                                       is_root=False,
                                       time_limit_s=None if time_limit_s is None
-                                      else time_limit_s - (time.time() - start_time)
+                                      else time_limit_s - (time.time() - start_time),
+                                      **kwargs
                                       )
 
         return {
@@ -592,7 +594,7 @@ class xRFM:
 
         return X, y, X_val, y_val, train_indices
 
-    def _build_tree_with_iterations(self, X, y, X_val, y_val, time_limit_s=None):
+    def _build_tree_with_iterations(self, X, y, X_val, y_val, time_limit_s=None, **kwargs):
         """
         Build a tree using multiple iterations, where each iteration uses
         information from the previous iteration's leaf models.
@@ -640,7 +642,8 @@ class xRFM:
             # Build new tree with improved projections
             tree = self._build_tree(X, y, X_val, y_val, avg_M=avg_M, is_root=False,
                                     time_limit_s=None if time_limit_s is None
-                                    else (time_limit_s - (time.time() - start_time)) / (self.n_tree_iters - iter))
+                                    else (time_limit_s - (time.time() - start_time)) / (self.n_tree_iters - iter),
+                                    **kwargs)
 
             # Evaluate this iteration's tree on validation data
             val_score = self.score_tree(X_val, y_val, tree)
@@ -659,7 +662,7 @@ class xRFM:
         print("==========================================================================")
         return best_tree
 
-    def fit(self, X, y, X_val, y_val):
+    def fit(self, X, y, X_val, y_val, **kwargs):
         """
         Fit the xRFM model to the training data.
         
@@ -755,9 +758,9 @@ class xRFM:
                     self.n_trees - iter)
             if self.n_tree_iters > 0:
                 tree = self._build_tree_with_iterations(X, y, X_val, y_val,
-                                                        time_limit_s=time_limit_s)
+                                                        time_limit_s=time_limit_s, **kwargs)
             else:
-                tree = self._build_tree(X, y, X_val, y_val, is_root=True, time_limit_s=time_limit_s)
+                tree = self._build_tree(X, y, X_val, y_val, is_root=True, time_limit_s=time_limit_s, **kwargs)
             self.trees.append(tree)
 
             if tree['type'] == 'leaf':
