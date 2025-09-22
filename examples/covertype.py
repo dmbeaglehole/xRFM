@@ -29,8 +29,8 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_
 X_val, X_test, y_val, y_test = train_test_split(X_test, y_test, test_size=0.2, random_state=0)
 
 
-max_n_train = 50_000
-max_n_val = 50_000
+max_n_train = 10_000
+max_n_val = 10_000
 min_subset_size = 25_000
 
 X_train = torch.from_numpy(X_train[:max_n_train]).float().cuda()
@@ -66,6 +66,9 @@ xrfm_params = {
     },
     'fit': {
         'reg': reg,
+        'manual_reg_tuning': False,
+        'manual_reg_tuning_range': [1e-6, 1e0],
+        'manual_reg_tuning_steps': 20,
         'iters': iters,
         'M_batch_size': len(X_train),
         'verbose': True,
@@ -89,9 +92,10 @@ default_rfm_params = {
         "verbose": False
     }
 }
-xrfm_model = xRFM(xrfm_params, device=DEVICE, min_subset_size=min_subset_size, tuning_metric='logloss', 
-                  default_rfm_params=default_rfm_params, 
-                  split_method='top_vector_agop_on_subset')
+xrfm_model = xRFM(xrfm_params, device=DEVICE, min_subset_size=min_subset_size, 
+                    tuning_metric='accuracy', 
+                    default_rfm_params=default_rfm_params, 
+                    split_method='top_vector_agop_on_subset')
 
 
 

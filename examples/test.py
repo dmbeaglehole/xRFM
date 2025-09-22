@@ -16,7 +16,7 @@ def fstar(X):
 def mse_loss(y_pred, y_true):
     return (y_pred - y_true).pow(2).mean()
 
-n = 60_000 #19115 # samples
+n = 1000 #19115 # samples
 ntest = 313
 d = 20 #8036  # dimension
 
@@ -60,8 +60,11 @@ xrfm_params = {
         'bandwidth_mode': "constant",
     },
     'fit': {
-        'solver': 'log_reg', #'log_reg', 'solve
+        'solver': 'solve', #'log_reg', 'solve
         'reg': reg,
+        # 'manual_reg_tuning': True,
+        # 'manual_reg_tuning_range': [1e-6, 1e1],
+        # 'manual_reg_tuning_steps': 10,
         'iters': iters,
         'M_batch_size': M_batch_size,
         'verbose': True,

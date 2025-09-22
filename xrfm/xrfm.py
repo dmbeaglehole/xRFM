@@ -168,7 +168,7 @@ class xRFM:
 
         if self.rfm_params is None:
             self.rfm_params = self.default_rfm_params
-            self.rfm_params['return_best_params'] = True
+            self.rfm_params['fit']['return_best_params'] = True
 
     def tree_copy(self, tree):
         """
@@ -408,8 +408,7 @@ class xRFM:
 
         return left_mask, right_mask
 
-    def _build_tree(self, X, y, X_val, y_val, train_indices=None, depth=0, avg_M=None, is_root=False,
-                    time_limit_s=None):
+    def _build_tree(self, X, y, X_val, y_val, train_indices=None, depth=0, avg_M=None, is_root=False, time_limit_s=None, **kwargs):
         """
         Recursively build the tree by splitting data based on random projections.
         
@@ -450,10 +449,9 @@ class xRFM:
 
             # Create and fit a TabRFM model on this subset
             model = RFM(**self.rfm_params['model'], tuning_metric=self.tuning_metric,
-                        categorical_info=self.categorical_info, device=self.device, time_limit_s=time_limit_s,
-                        **self.extra_rfm_params_)
+                        categorical_info=self.categorical_info, device=self.device, time_limit_s=time_limit_s, **self.extra_rfm_params_)
 
-            model.fit((X, y), (X_val, y_val), **self.rfm_params['fit'], callback=self.callback)
+            model.fit((X, y), (X_val, y_val), **self.rfm_params['fit'], callback=self.callback, **kwargs)
             return {'type': 'leaf', 'model': model, 'train_indices': train_indices, 'is_root': is_root}
 
         # Generate projection vector

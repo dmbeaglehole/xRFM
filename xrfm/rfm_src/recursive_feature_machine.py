@@ -480,6 +480,50 @@ class RFM(torch.nn.Module):
             self.reset_adaptive_bandwidth()
 
         self.centers = centers
+        
+        # Optional: manual regularization tuning over a log-uniform grid
+        X_val = kwargs.get('X_val', None)
+        y_val = kwargs.get('y_val', None)
+        if getattr(self, 'manual_reg_tuning', False) and (X_val is not None) and (y_val is not None):
+            if self.verbose:
+                print("Tuning regularization over a log-uniform grid")
+            reg_low, reg_high = self.manual_reg_tuning_range
+            assert reg_low > 0 and reg_high > reg_low, "manual_reg_tuning_range must be (low>0, high>low)"
+            num_steps = int(self.manual_reg_tuning_steps)
+            # Build log-spaced grid between reg_low and reg_high (inclusive)
+            log_low = np.log(reg_low)
+            log_high = np.log(reg_high)
+            reg_grid = np.exp(np.linspace(log_low, log_high, num_steps)).astype(float)
+
+            best_metric = float('inf') if self.should_minimize else float('-inf')
+            best_alphas = None
+            best_reg = None
+
+            for reg_value in reg_grid:
+                print(f"Least-squares solve with value {reg_value}")
+                # Ensure fresh adaptive state per trial if applicable
+                if self.bandwidth_mode == 'adaptive':
+                    self.reset_adaptive_bandwidth()
+
+                self.reg = float(reg_value)
+
+                trial_alphas = self.fit_predictor_lstsq(centers, targets)
+
+                # Temporarily set weights to evaluate on validation set
+                self.weights = trial_alphas
+                val_metrics = self._compute_validation_metrics(centers, targets, **kwargs)
+                current = val_metrics[self.tuning_metric]
+
+                if (self.should_minimize and current < best_metric) or ((not self.should_minimize) and current > best_metric):
+                    best_metric = current
+                    best_alphas = trial_alphas.clone() if isinstance(trial_alphas, torch.Tensor) else trial_alphas
+                    best_reg = float(reg_value)
+
+            # Restore best found configuration
+            if best_alphas is not None:
+                self.weights = best_alphas
+                self.reg = best_reg
+                return
 
         # Route logistic solver to a dedicated IRLS method with validation early stopping
         if self.solver == 'log_reg':
@@ -912,6 +956,12 @@ class RFM(torch.nn.Module):
         self.center_grads = center_grads
         self.solver = solver if solver is not None else self.solver
         self.top_k = kwargs.get('top_k', None)
+
+        # Manual regularization tuning controls
+        self.manual_reg_tuning = kwargs.get('manual_reg_tuning', False)
+        self.manual_reg_tuning_range = kwargs.get('manual_reg_tuning_range', [1e-6, 1e1])
+        self.manual_reg_tuning_eps = kwargs.get('manual_reg_tuning_eps', 1e-3)
+        self.manual_reg_tuning_steps = kwargs.get('manual_reg_tuning_steps', 10)
 
         if self.solver == 'log_reg':
             self.class_converter._numerical_type = 'logit_diff'
