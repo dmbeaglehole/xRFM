@@ -2,8 +2,17 @@ from .class_conversion import ClassificationConverter
 from .eigenpro import KernelModel
     
 import torch, numpy as np
-from .kernels import Kernel, LaplaceKernel, ProductLaplaceKernel, SumPowerLaplaceKernel, LightLaplaceKernel
-from .kernels import KermacProductLaplaceKernel, KermacLpqLaplaceKernel
+from .kernels import (
+    Kernel,
+    LaplaceKernel,
+    ProductLaplaceKernel,
+    SumPowerLaplaceKernel,
+    LightLaplaceKernel,
+    LpqLaplaceKernel,
+    KermacProductLaplaceKernel,
+    KermacLpqLaplaceKernel,
+    kermac,
+)
 from tqdm.contrib import tenumerate
 from .metrics import Metrics, Metric
 from .utils import matrix_power
@@ -194,7 +203,13 @@ class RFM(torch.nn.Module):
         """
         super().__init__()
         if isinstance(kernel, str):
-            kernel = self.kernel_from_str(kernel, bandwidth=bandwidth, exponent=exponent, norm_p=norm_p)
+            kernel = self.kernel_from_str(
+                kernel,
+                bandwidth=bandwidth,
+                exponent=exponent,
+                norm_p=norm_p,
+                device=device,
+            )
         self.kernel_obj = kernel
         self.agop_power = agop_power
         self.M = None
@@ -245,7 +260,7 @@ class RFM(torch.nn.Module):
         """
         return self.kernel_obj.get_kernel_matrix(x, z, self.sqrtM if self.use_sqrtM else self.M)
 
-    def kernel_from_str(self, kernel_str, bandwidth, exponent, norm_p=2.):
+    def kernel_from_str(self, kernel_str, bandwidth, exponent, norm_p=2., device=None):
         """
         Create kernel object from string specification.
         
@@ -256,6 +271,7 @@ class RFM(torch.nn.Module):
             - 'laplace', 'l2': Standard Laplace kernel
             - 'l2_high_dim', 'l2_light': Lightweight Laplace kernel for high dimensions
             - 'product_laplace', 'l1': Product Laplace kernel for categorical features
+            - 'lpq': Mixed L^p/L^q Laplace kernel
             - 'sum_power_laplace', 'l1_power': Sum of power Laplace kernel
             
         bandwidth : float
@@ -274,18 +290,34 @@ class RFM(torch.nn.Module):
         ValueError
             If kernel_str is not recognized
         """
+        def _should_use_kermac(dev):
+            if kermac is None:
+                return False
+            if not torch.cuda.is_available():
+                return False
+            if dev is None:
+                return True
+            try:
+                return torch.device(dev).type == 'cuda'
+            except (TypeError, RuntimeError, ValueError):
+                return False
+
+        use_kermac = _should_use_kermac(device)
+
         if kernel_str in ['laplace', 'l2']:
             return LaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         elif kernel_str in ['l2_high_dim', 'l2_light']:
             return LightLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
-        elif kernel_str in ['product_laplace', 'l1']:
-            return ProductLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         elif kernel_str in ['sum_power_laplace', 'l1_power']:
             return SumPowerLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
-        elif kernel_str in ['kermac_product_laplace', 'l1_kermac']:
-            return KermacProductLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
-        elif kernel_str in ['kermac_lpq_laplace', 'lpq_kermac']:
-            return KermacLpqLaplaceKernel(bandwidth=bandwidth, q=exponent, p=norm_p)
+        elif kernel_str in ['product_laplace', 'l1', 'kermac_product_laplace', 'l1_kermac']:
+            if use_kermac:
+                return KermacProductLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
+            return ProductLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
+        elif kernel_str in ['lpq', 'kermac_lpq_laplace', 'lpq_kermac']:
+            if use_kermac:
+                return KermacLpqLaplaceKernel(bandwidth=bandwidth, q=exponent, p=norm_p)
+            return LpqLaplaceKernel(bandwidth=bandwidth, p=norm_p, q=exponent)
         else:
             raise ValueError(f"Invalid kernel: {kernel_str}")
         
