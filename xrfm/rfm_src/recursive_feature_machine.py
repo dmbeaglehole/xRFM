@@ -524,13 +524,12 @@ class RFM(torch.nn.Module):
                 self.weights = best_alphas
                 self.reg = best_reg
                 return
-
+                
         # Route logistic solver to a dedicated IRLS method with validation early stopping
-        if self.solver == 'log_reg':
+        elif self.solver == 'log_reg':
             self.weights = self.fit_predictor_logistic(centers, targets, **kwargs)
             return
-
-        if self.fit_using_eigenpro:
+        elif self.fit_using_eigenpro:
             assert not self.label_centering, "EigenPro does not yet support label centering"
             if self.prefit_eigenpro:
                 random_indices = torch.randperm(centers.shape[0])[:self.max_lstsq_size]
