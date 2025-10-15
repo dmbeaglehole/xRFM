@@ -16,7 +16,7 @@ from .kernels import (
 from tqdm.contrib import tenumerate
 from .metrics import Metrics, Metric
 from .utils import matrix_power
-from .gpu_utils import with_env_var
+from .gpu_utils import with_env_var, get_gpu_memory_bytes, memory_scaling_factor
 # logistic solver is used indirectly inside fit_predictor_logistic via callback; no top-level import needed
 import time
 from typing import Union
@@ -1105,14 +1105,19 @@ class RFM(torch.nn.Module):
                             light_kernels=Union[LaplaceKernel, LightLaplaceKernel, KermacLpqLaplaceKernel, KermacProductLaplaceKernel]):
         """Computes the optimal batch size for AGOP."""
         if self.device in ['cpu', torch.device('cpu')] or isinstance(self.kernel_obj, light_kernels):
-            # cpu and light kernels are less memory intensive, use a single batch
-            M_batch_size = max(min(n, max_cheap_batch_size), 1)
+            # cpu and light kernels are less memory intensive, use fewer but larger batches scaled by free GPU memory
+            cheap_batch_cap = int(max_cheap_batch_size * memory_scaling_factor(self.device))
+            cheap_batch_cap = max(cheap_batch_cap, 1)
+            M_batch_size = max(min(n, cheap_batch_cap), 1)
         else:
-            total_memory_possible = torch.cuda.get_device_properties(self.device).total_memory
-            curr_mem_use = torch.cuda.memory_allocated()
-            available_memory = total_memory_possible - curr_mem_use
-            M_batch_size = int(available_memory / (mem_constant*n*c*d*scalar_size))
-            M_batch_size = min(M_batch_size, max_batch_size)
+            available_memory, _ = get_gpu_memory_bytes(self.device)
+            if not available_memory:
+                M_batch_size = max(min(n, max_batch_size), 1)
+            else:
+                denom = mem_constant * n * c * d * scalar_size
+                M_batch_size = int(available_memory / denom) if denom else max_batch_size
+                M_batch_size = max(M_batch_size, 1)
+                M_batch_size = min(M_batch_size, max_batch_size, n)
         print(f"Optimal M batch size: {M_batch_size}")
         return M_batch_size
     

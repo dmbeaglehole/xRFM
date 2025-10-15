@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from xrfm.rfm_src import RFM, matrix_power
+from xrfm.rfm_src.gpu_utils import memory_scaling_factor
 from tqdm import tqdm
 import copy
 
@@ -113,7 +114,7 @@ class xRFM:
                  fixed_vector=None, callback=None, classification_mode='zero_one', 
                  time_limit_s=None, n_threads=None, refill_size=1500, random_state=None, 
                  **kwargs):
-        self.min_subset_size = min_subset_size
+        self._base_min_subset_size = int(min_subset_size)
         self.rfm_params = rfm_params
         self.max_depth = max_depth
         self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -132,6 +133,10 @@ class xRFM:
         self.time_limit_s = time_limit_s
         self.n_threads = n_threads
         self.extra_rfm_params_ = {}
+
+        # scale the maximum leaf size relative to a 40GB GPU; assume quadratic memory growth
+        subset_scale = memory_scaling_factor(self.device, quadratic=True)
+        self.min_subset_size = max(int(self._base_min_subset_size * subset_scale), 1)
 
         if random_state is not None:
             random.seed(random_state)
@@ -1114,8 +1119,10 @@ class xRFM:
         model = RFM(**self.default_rfm_params['model'], device=self.device, time_limit_s=time_limit_s,
                     **self.extra_rfm_params_)
 
-        subset_size = min(subset_size, len(X))
-        subset_train_size = int(subset_size * 0.95)  # 95/5 split, probably won't need the val data.
+        base_subset_size = int(subset_size)
+        scaled_subset_size = max(int(base_subset_size * memory_scaling_factor(self.device, quadratic=True)), 1)
+        subset_size = min(scaled_subset_size, len(X))
+        subset_train_size = max(int(subset_size * 0.95), 1)  # 95/5 split, probably won't need the val data.
 
         subset_indices = torch.randperm(len(X))
         subset_train_indices = subset_indices[:subset_train_size]

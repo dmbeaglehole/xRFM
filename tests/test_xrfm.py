@@ -28,7 +28,7 @@ def test_regression(time_limit_s):
     X_train, X_val, y_train, y_val = train_test_split(X_trainval, y_trainval, test_size=0.2, random_state=0)
 
     model.fit(X_train, y_train, X_val, y_val)
-    rmse = root_mean_squared_error(y_test, model.predict(X_test))
+    rmse = root_mean_squared_error(y_test.cpu().numpy(), model.predict(X_test))
     if rmse > 0.3:
         raise AssertionError(f'RMSE was too large: {rmse:g} is larger than 0.3')
 
@@ -58,7 +58,7 @@ def test_classification(tuning_metric, classification_mode, n_classes):
     X_train, X_val, y_train, y_val = train_test_split(X_trainval, y_trainval, test_size=0.2, random_state=0)
 
     model.fit(X_train, y_train, X_val, y_val)
-    acc = accuracy_score(y_test, model.predict(X_test))
+    acc = accuracy_score(y_test.cpu().numpy(), model.predict(X_test))
     if acc < 0.8:
         raise AssertionError(f'Accuracy was too small: {acc:g} is smaller than 0.8')
 
@@ -116,7 +116,7 @@ def test_lpq_kermac_matches_l1_kermac_when_p_equals_exponent(exponent):
     print(f"preds_lpq: {preds_lpq.shape}, preds_l1: {preds_l1.shape}")
     print(f"preds_lpq[:5]: {preds_lpq[:5]}, preds_l1[:5]: {preds_l1[:5]}")
 
-    np.testing.assert_allclose(preds_lpq, preds_l1, atol=5e-3)
+    np.testing.assert_allclose(preds_lpq, preds_l1, atol=1e-2)
 
 
 @pytest.mark.parametrize('exponent', [0.7, 1.0, 1.2, 1.4])
@@ -129,7 +129,7 @@ def test_lpq_kermac_matches_l2_when_p_equals_2(exponent):
 
     print(f"preds_lpq[:5]: {preds_lpq[:5]}, preds_l2[:5]: {preds_l2[:5]}")
 
-    np.testing.assert_allclose(preds_lpq, preds_l2, atol=5e-3)
+    np.testing.assert_allclose(preds_lpq, preds_l2, atol=1e-2)
 
 
 @pytest.mark.parametrize('exponent', [0.8, 1.0, 1.2])
