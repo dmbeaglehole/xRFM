@@ -237,7 +237,7 @@ class RFM(torch.nn.Module):
 
         if mem_gb is not None:
             self.mem_gb = mem_gb
-        elif device.type == "cuda":
+        elif self.device.type == "cuda":
             # find GPU memory in GB, keeping aside 1GB for safety
             self.mem_gb = torch.cuda.get_device_properties(self.device).total_memory//1024**3 - 1 
         else:
