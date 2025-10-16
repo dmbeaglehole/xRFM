@@ -180,7 +180,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 rfm_params = {
     'model': {
-        'kernel': 'product_laplace',
+        'kernel': 'l2',
         'bandwidth': 10.0,
         'exponent': 1.0,
         'diag': False,
