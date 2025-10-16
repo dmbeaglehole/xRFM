@@ -1,7 +1,14 @@
+import time
+from typing import Union
+
+import torch
+import numpy as np
+from tqdm.contrib import tenumerate
+
 from .class_conversion import ClassificationConverter
 from .eigenpro import KernelModel
-    
-import torch, numpy as np
+from .utils import device_from_str
+
 from .kernels import (
     Kernel,
     LaplaceKernel,
@@ -13,13 +20,10 @@ from .kernels import (
     KermacLpqLaplaceKernel,
     kermac,
 )
-from tqdm.contrib import tenumerate
 from .metrics import Metrics, Metric
 from .utils import matrix_power
 from .gpu_utils import with_env_var, get_gpu_memory_bytes, memory_scaling_factor
-# logistic solver is used indirectly inside fit_predictor_logistic via callback; no top-level import needed
-import time
-from typing import Union
+
 
 class RFM(torch.nn.Module):
     """
@@ -216,7 +220,7 @@ class RFM(torch.nn.Module):
         self.sqrtM = None
         self.iters = iters
         self.diag = diag # if True, Mahalanobis matrix M will be diagonal
-        self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device_from_str(device)
         self.agop_power = 0.5 # power for root of agop
         self.max_lstsq_size = 70_000 # max number of points to use for direct solve
         self.bandwidth_mode = bandwidth_mode
@@ -233,7 +237,7 @@ class RFM(torch.nn.Module):
 
         if mem_gb is not None:
             self.mem_gb = mem_gb
-        elif torch.cuda.is_available():
+        elif device.type == "cuda":
             # find GPU memory in GB, keeping aside 1GB for safety
             self.mem_gb = torch.cuda.get_device_properties(self.device).total_memory//1024**3 - 1 
         else:
@@ -310,10 +314,14 @@ class RFM(torch.nn.Module):
             return LightLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         elif kernel_str in ['sum_power_laplace', 'l1_power']:
             return SumPowerLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
+        elif kernel_str == 'l1_legacy':
+            return ProductLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         elif kernel_str in ['product_laplace', 'l1', 'kermac_product_laplace', 'l1_kermac']:
             if use_kermac:
                 return KermacProductLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
             return ProductLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
+        elif kernel_str == 'lpq_legacy':
+            return LpqLaplaceKernel(bandwidth=bandwidth, p=norm_p, q=exponent)
         elif kernel_str in ['lpq', 'kermac_lpq_laplace', 'lpq_kermac']:
             if use_kermac:
                 return KermacLpqLaplaceKernel(bandwidth=bandwidth, q=exponent, p=norm_p)

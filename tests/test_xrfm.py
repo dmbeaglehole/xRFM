@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 from sklearn.metrics import root_mean_squared_error, accuracy_score
 import torch
@@ -5,6 +7,7 @@ from sklearn.model_selection import train_test_split
 import numpy as np
 
 from xrfm import xRFM
+from xrfm.rfm_src import kernels as kernel_module
 
 @pytest.mark.parametrize(
     'time_limit_s', [0, None]
@@ -73,7 +76,7 @@ def _make_regression_data(seed=0, n_train=256, n_val=128, d=8, device=None):
     return X[:n_train], y[:n_train], X[n_train:], y[n_train:]
 
 
-def _train_and_predict(kernel, exponent, norm_p=None, bandwidth=5.0, seed=0):
+def _train_and_predict(kernel, exponent, norm_p=None, bandwidth=10.0, bandwidth_mode='constant', seed=0, iters=3):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -87,11 +90,11 @@ def _train_and_predict(kernel, exponent, norm_p=None, bandwidth=5.0, seed=0):
             'exponent': exponent,
             'norm_p': norm_p,
             'diag': False,
-            'bandwidth_mode': 'constant'
+            'bandwidth_mode': bandwidth_mode
         },
         'fit': {
-            'reg': 1e-4,
-            'iters': 3,
+            'reg': 1e-3,
+            'iters': iters,
             'verbose': False,
             'early_stop_rfm': False,
             'return_best_params': False,
@@ -105,13 +108,14 @@ def _train_and_predict(kernel, exponent, norm_p=None, bandwidth=5.0, seed=0):
     return preds
 
 
+@pytest.mark.parametrize('bandwidth_mode', ['constant', 'adaptive'])
 @pytest.mark.parametrize('exponent', [0.7, 1.0, 1.2, 1.4])
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires GPU")
-def test_lpq_kermac_matches_l1_kermac_when_p_equals_exponent(exponent):
+def test_lpq_kermac_matches_l1_kermac_when_p_equals_exponent(exponent, bandwidth_mode):
     # lpq_kermac with p=q should match l1_kermac with exponent=q
-    preds_lpq = _train_and_predict(kernel='lpq_kermac', exponent=exponent, norm_p=exponent)
-    preds_l1 = _train_and_predict(kernel='l1_kermac', exponent=exponent)
+    preds_lpq = _train_and_predict(kernel='lpq_kermac', exponent=exponent, norm_p=exponent, bandwidth_mode=bandwidth_mode)
+    preds_l1 = _train_and_predict(kernel='l1_kermac', exponent=exponent, bandwidth_mode=bandwidth_mode)
 
     print(f"preds_lpq: {preds_lpq.shape}, preds_l1: {preds_l1.shape}")
     print(f"preds_lpq[:5]: {preds_lpq[:5]}, preds_l1[:5]: {preds_l1[:5]}")
@@ -119,25 +123,139 @@ def test_lpq_kermac_matches_l1_kermac_when_p_equals_exponent(exponent):
     np.testing.assert_allclose(preds_lpq, preds_l1, atol=1e-2)
 
 
+@pytest.mark.parametrize('bandwidth_mode', ['constant', 'adaptive'])
 @pytest.mark.parametrize('exponent', [0.7, 1.0, 1.2, 1.4])
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires GPU")
-def test_lpq_kermac_matches_l2_when_p_equals_2(exponent):
+def test_lpq_kermac_matches_l2_when_p_equals_2(exponent, bandwidth_mode):
     # lpq_kermac with p=2 should match l2 with same exponent
-    preds_lpq = _train_and_predict(kernel='lpq_kermac', exponent=exponent, norm_p=2.0)
-    preds_l2 = _train_and_predict(kernel='l2', exponent=exponent)
+    preds_lpq = _train_and_predict(kernel='lpq_kermac', exponent=exponent, norm_p=2.0, bandwidth_mode=bandwidth_mode)
+    preds_l2 = _train_and_predict(kernel='l2', exponent=exponent, bandwidth_mode=bandwidth_mode)
 
     print(f"preds_lpq[:5]: {preds_lpq[:5]}, preds_l2[:5]: {preds_l2[:5]}")
 
     np.testing.assert_allclose(preds_lpq, preds_l2, atol=1e-2)
 
 
+@pytest.mark.parametrize(
+    "norm_p, exponent",
+    [
+        (1.0, 0.8),
+        (1.5, 1.0),
+        (2.0, 1.5),
+    ],
+)
+@pytest.mark.parametrize('iters', [3, 0])
+@pytest.mark.parametrize('bandwidth_mode', ['constant', 'adaptive'])
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires GPU")
+def test_lpq_kermac_matches_lpq(norm_p, exponent, iters, bandwidth_mode):
+    # lpq_kermac should match the legacy lpq kernel for the same p, q configuration
+    preds_lpq_kermac = _train_and_predict(kernel="lpq_kermac", exponent=exponent, norm_p=norm_p, bandwidth_mode=bandwidth_mode, iters=iters)
+    preds_lpq_legacy = _train_and_predict(kernel="lpq_legacy", exponent=exponent, norm_p=norm_p, bandwidth_mode=bandwidth_mode, iters=iters)
+
+    np.testing.assert_allclose(preds_lpq_kermac, preds_lpq_legacy, atol=1e-2)
+
+
+@pytest.mark.parametrize('bandwidth_mode', ['constant', 'adaptive'])
 @pytest.mark.parametrize('exponent', [0.8, 1.0, 1.2])
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires GPU")
-def test_l1_kermac_matches_l1(exponent):
+def test_l1_kermac_matches_l1(exponent, bandwidth_mode):
 
-    preds_l1 = _train_and_predict(kernel='l1', exponent=exponent)
-    preds_l1_kermac = _train_and_predict(kernel='l1_kermac', exponent=exponent)
+    preds_l1_legacy = _train_and_predict(kernel='l1_legacy', exponent=exponent, bandwidth_mode=bandwidth_mode)
+    preds_l1_kermac = _train_and_predict(kernel='l1_kermac', exponent=exponent, bandwidth_mode=bandwidth_mode)
 
-    np.testing.assert_allclose(preds_l1, preds_l1_kermac, atol=1e-1)
+    np.testing.assert_allclose(preds_l1_legacy, preds_l1_kermac, atol=1e-1)
+
+
+@pytest.mark.parametrize(
+    "kernel, norm_p, exponent",
+    [
+        ("l1", None, 1.0),
+        ("lpq", 1.5, 1.0),
+    ]
+)
+@pytest.mark.parametrize('bandwidth_mode', ['constant', 'adaptive'])
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires GPU")
+@pytest.mark.skipif(kernel_module.kermac is None, reason="requires kermac")
+def test_cpu_gpu_l1_lpq_routing(kernel, norm_p, exponent, bandwidth_mode):
+    # Generate a shared dataset on CPU so both devices see identical tensors
+    torch.manual_seed(7)
+    np.random.seed(7)
+    n_train, n_val, d = 96, 48, 6
+    X = torch.randn(n_train + n_val, d)
+    y = (0.5 * X[:, 0] + torch.sin(X[:, 1])).unsqueeze(1)
+
+    X_train, X_val = X[:n_train], X[n_train:]
+    y_train, y_val = y[:n_train], y[n_train:]
+
+    base_rfm_params = {
+        "model": {
+            "kernel": kernel,
+            "bandwidth": 2.5,
+            "exponent": exponent,
+            "norm_p": norm_p,
+            "diag": False,
+            "bandwidth_mode": bandwidth_mode,
+        },
+        "fit": {
+            "reg": 1e-4,
+            "iters": 2,
+            "verbose": False,
+            "early_stop_rfm": False,
+            "return_best_params": False,
+        },
+    }
+
+    def _run_on(device):
+        torch.manual_seed(11)
+        np.random.seed(11)
+        if device.type == "cuda":
+            torch.cuda.manual_seed(11)
+        model = xRFM(
+            rfm_params=base_rfm_params,
+            device=device,
+            min_subset_size=10_000,
+            tuning_metric="mse",
+            n_threads=1,
+        )
+        model.fit(
+            X_train.to(device),
+            y_train.to(device),
+            X_val.to(device),
+            y_val.to(device),
+        )
+        preds = model.predict(X_val.to(device))
+
+        def _collect_leaf_models(node):
+            if node.get("type") == "leaf":
+                return [node["model"]]
+            leaves = []
+            if node.get("left_child") is not None:
+                leaves.extend(_collect_leaf_models(node["left_child"]))
+            if node.get("right_child") is not None:
+                leaves.extend(_collect_leaf_models(node["right_child"]))
+            return leaves
+
+        leaf_models = _collect_leaf_models(model.trees[0])
+        leaf_kernel_types = {type(leaf.kernel_obj) for leaf in leaf_models}
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        return preds, leaf_kernel_types
+
+    cpu_preds, cpu_kernel_types = _run_on(torch.device("cpu"))
+    gpu_preds, gpu_kernel_types = _run_on(torch.device("cuda"))
+
+    expected_cpu_cls = (
+        kernel_module.ProductLaplaceKernel if kernel == "l1" else kernel_module.LpqLaplaceKernel
+    )
+    expected_gpu_cls = (
+        kernel_module.KermacProductLaplaceKernel if kernel == "l1" else kernel_module.KermacLpqLaplaceKernel
+    )
+
+    assert cpu_kernel_types == {expected_cpu_cls}
+    assert gpu_kernel_types == {expected_gpu_cls}
+
+    np.testing.assert_allclose(cpu_preds, gpu_preds, atol=1e-2, rtol=1e-3)

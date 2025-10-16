@@ -1,30 +1,14 @@
 '''Helper functions.'''
-from typing import Literal
-
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import time
-from scipy.linalg import sqrtm, fractional_matrix_power
 
-class SmoothClampedReLU(nn.Module):
-    def __init__(self, beta=50):
-        super(SmoothClampedReLU, self).__init__()
-        self.beta = beta
-        
-    def forward(self, x):
-        # Smooth transition at x=0 (using softplus with high beta)
-        activated = F.softplus(x, beta=self.beta)
-        # Smooth transition at x=1 (using sigmoid scaled and shifted)
-        # As x approaches infinity, this approaches 1
-        clamped = activated - F.softplus(activated - 1, beta=self.beta)
-        
-        return clamped
-
-def float_x(data):
-    '''Set data array precision.'''
-    return np.float32(data)
+def device_from_str(device):
+    if device is None:
+        return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    return torch.device(device)
 
 def matrix_power(M, power):
     """

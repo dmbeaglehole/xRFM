@@ -481,14 +481,23 @@ class LpqLaplaceKernel(Kernel):
     def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
         xm = self._transform_m(x, mat)
         zm = self._transform_m(z, mat)
-        def forward_func(z):
-            dists = torch.cdist(xm, zm, p=self.p) ** self.exponent
-            factor = -((1. / self.bandwidth) ** self.exponent)
-            # this is \sum_j f(z_j), so the derivative wrt z will be jacobian(f)(z_j) for all z_j
-            return coefs @ torch.exp(factor * (dists * (dists >= self.eps))).sum(dim=1)
+
+        def forward_func(z_transformed: torch.Tensor) -> torch.Tensor:
+            base_dists = torch.cdist(xm, z_transformed, p=self.p)
+            base_mask = base_dists >= self.eps
+
+            dist_pow_q = torch.where(
+                base_mask,
+                base_dists.clamp_min(self.eps).pow(self.exponent),
+                torch.zeros_like(base_dists),
+            )
+
+            factor = -((1.0 / self.bandwidth) ** self.exponent)
+            kernel_vals = torch.exp(factor * dist_pow_q)
+            return coefs @ kernel_vals.sum(dim=1)
 
         return torch.func.jacrev(forward_func)(zm)
-    
+
 class SumPowerLaplaceKernel(Kernel):
     def __init__(self, bandwidth: float, exponent: float, eps: float = 1e-10, const_mix: float = 0.0,
                  power: int = 2,
@@ -778,4 +787,3 @@ if __name__ == '__main__':
              linestyle='--', label='finite diff')
     plt.legend()
     plt.show()
-
