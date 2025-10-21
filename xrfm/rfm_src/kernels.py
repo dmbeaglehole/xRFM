@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import Optional, Union, Tuple
 
 import torch
 
@@ -532,18 +532,25 @@ class SumPowerLaplaceKernel(Kernel):
         return sum
 
     def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
-        xm = self._transform_m(x, mat)
-        zm = self._transform_m(z, mat)
-        def forward_func(z):
-            # compute \sum_j f(z_j)
-            diffs = torch.abs(xm[:, None, :] - zm[None, :, :]).pow(self.exponent)
-            diffs = torch.exp((-1. / (self.bandwidth ** self.exponent)) * diffs)
-            sum = (1.0 - self.const_mix) * (diffs.sum(dim=-1) / x.shape[-1]) + self.const_mix
-            sum = sum ** self.power
-            sum = sum.sum(dim=-1)  # sum over z
-            return coefs @ sum
+        xm = self._transform_m(x, mat)  # (n_x, d)
+        zm = self._transform_m(z, mat)  # (n_z, d)
 
-        return torch.func.jacrev(forward_func)(zm)
+        xm = self._transform_m(x, mat)  # (n_x, d)
+        zm = self._transform_m(z, mat)  # (n_z, d)
+
+        coefs = coefs.to(dtype=xm.dtype)
+
+        def forward_func(z_tensor: torch.Tensor) -> torch.Tensor:
+            diffs = torch.abs(xm[:, None, :] - z_tensor[None, :, :]).pow(self.exponent)
+            diffs = torch.exp((-1.0 / (self.bandwidth ** self.exponent)) * diffs)
+            summed = (1.0 - self.const_mix) * (diffs.sum(dim=-1) / float(xm.shape[-1])) + self.const_mix
+            powered = summed.pow(self.power)
+            # Sum across z dimension to get shape (n_x,)
+            agg = powered.sum(dim=-1)
+            return coefs @ agg
+
+        grads = torch.func.jacrev(forward_func)(zm)
+        return grads
 
 class KermacProductLaplaceKernel(Kernel):
     def __init__(self, bandwidth: float, exponent: float, eps: float = 1e-8, bandwidth_mode: str = 'constant'):
@@ -758,7 +765,223 @@ class KermacLpqLaplaceKernel(Kernel):
         out = kermac.cdist_grad(a_mat, xm, coefs, zm, p=self.p)
         return out.transpose(-2, -1).float()
 
-        
+class KermacSumPowerLaplaceKernel(Kernel):
+    def __init__(
+        self,
+        bandwidth: float,
+        p: float,
+        q: float,
+        const_mix: float = 0.0,
+        eps: float = 1e-10,
+        bandwidth_mode: str = 'constant',
+    ):
+        super().__init__()
+        assert bandwidth > 0
+        assert 0 < p <= 2
+        assert 0 < q <= p
+        assert eps > 0
+        assert 0.0 <= const_mix < 1.0
+        assert bandwidth_mode == 'constant', "Adaptive bandwidth currently not supported"
+        self.bandwidth = bandwidth
+        self.base_bandwidth = bandwidth
+        self.p = p  # keep attribute for backwards compatibility
+        self.power = p
+        self.exponent = q
+        self.q = q
+        self.const_mix = const_mix
+        self.eps = eps  # this one is for numerical stability
+        self.bandwidth_mode = bandwidth_mode
+
+    def get_sample_batch_size(self, n: int, d: int, scalar_size: int = 4, mem_constant: float = 20) -> int:
+        total_memory_possible = torch.cuda.get_device_properties(torch.device('cuda')).total_memory
+        curr_mem_use = torch.cuda.memory_allocated()
+        available_memory = total_memory_possible - curr_mem_use
+        return int(available_memory / (mem_constant*n*scalar_size))
+
+    def _sum_exp_pairwise(self, x: torch.Tensor, z: torch.Tensor) -> Tuple[torch.Tensor, int]:
+        if x.numel() == 0 or z.numel() == 0:
+            empty = torch.zeros(
+                (x.shape[0], z.shape[0]),
+                dtype=x.dtype,
+                device=x.device,
+            )
+            return empty, 0
+
+        dim_count = x.shape[-1]
+        sum_exp = kermac.cdist_expadd(
+            x.contiguous(),
+            z.contiguous(),
+            q=float(self.exponent),
+            ell=float(self.bandwidth),
+        )
+
+        if sum_exp.dim() == 3 and sum_exp.size(0) == 1:
+            sum_exp = sum_exp.squeeze(0)
+        if sum_exp.dim() == 2 and sum_exp.shape == (z.shape[0], x.shape[0]):
+            sum_exp = sum_exp.transpose(0, 1).contiguous()
+
+        return sum_exp, dim_count
+
+    def _finalize_kernel(self, sum_exp: torch.Tensor, dim_count: int) -> torch.Tensor:
+        if dim_count <= 0:
+            raise ValueError("SumPower kernel requires at least one feature dimension.")
+        mix = (1.0 - self.const_mix) / float(dim_count)
+        kernel = self.const_mix + mix * sum_exp
+        return kernel.clamp_min(0.0).pow(self.power)
+
+    def _get_kernel_matrix_impl(
+        self,
+        x: torch.Tensor,
+        z: torch.Tensor,
+        mat: Optional[torch.Tensor] = None,
+        dist_mat: Optional[Tuple[torch.Tensor, int]] = None,
+    ) -> torch.Tensor:
+        if dist_mat is not None:
+            sum_exp, dim_count = dist_mat
+        else:
+            xm = self._transform_m(x, mat)
+            zm = self._transform_m(z, mat)
+            sum_exp, dim_count = self._sum_exp_pairwise(xm, zm)
+        return self._finalize_kernel(sum_exp, dim_count)
+
+    def _get_dist_matrix_categorical(
+        self,
+        x: torch.Tensor,
+        z: torch.Tensor,
+        mat: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, int]:
+        numerical_indices = getattr(self, "numerical_indices", None)
+        categorical_indices = getattr(self, "categorical_indices", None)
+        categorical_vectors = getattr(self, "categorical_vectors", None)
+
+        if (numerical_indices is None or len(numerical_indices) == 0) and (
+            categorical_indices is None or len(categorical_indices) == 0
+        ):
+            raise ValueError("No numerical or categorical features provided.")
+
+        sum_exp = None
+        dim_count = 0
+
+        if numerical_indices is not None and len(numerical_indices) > 0:
+            mat_num = get_sub_matrix(mat, numerical_indices)
+            x_num = self._transform_m(x[:, numerical_indices], mat_num)
+            z_num = self._transform_m(z[:, numerical_indices], mat_num)
+            numeric_sum, numeric_dims = self._sum_exp_pairwise(x_num, z_num)
+            sum_exp = numeric_sum
+            dim_count += numeric_dims
+
+        if categorical_indices is not None and categorical_vectors is not None:
+            if len(categorical_indices) != len(categorical_vectors):
+                raise ValueError("Number of categorical index and vector groups must match")
+            for cat_idx, cat_vecs in zip(categorical_indices, categorical_vectors):
+                mat_cat = get_sub_matrix(mat, cat_idx)
+                transformed_vecs = self._transform_m(cat_vecs, mat_cat)
+                cat_sum, cat_dims = self._sum_exp_pairwise(transformed_vecs, transformed_vecs)
+                if cat_dims == 0:
+                    continue
+                x_cat = x[:, cat_idx].argmax(dim=-1)
+                z_cat = z[:, cat_idx].argmax(dim=-1)
+                cat_contrib = cat_sum[x_cat[:, None], z_cat[None, :]]
+                if sum_exp is None:
+                    sum_exp = cat_contrib.clone()
+                else:
+                    sum_exp = sum_exp + cat_contrib
+                dim_count += cat_dims
+
+        if sum_exp is None:
+            sum_exp = torch.zeros(
+                (x.shape[0], z.shape[0]),
+                dtype=x.dtype,
+                device=x.device,
+            )
+        return sum_exp, dim_count
+
+    def _get_kernel_matrix_categorical_impl(
+        self,
+        x: torch.Tensor,
+        z: torch.Tensor,
+        mat: Optional[torch.Tensor] = None,
+        dist_mat: Optional[Tuple[torch.Tensor, int]] = None,
+    ) -> torch.Tensor:
+        if dist_mat is None:
+            sum_exp, dim_count = self._get_dist_matrix_categorical(x, z, mat)
+        else:
+            sum_exp, dim_count = dist_mat
+        return self._finalize_kernel(sum_exp, dim_count)
+ 
+
+    def _get_function_grad_impl(
+        self,
+        x: torch.Tensor,
+        z: torch.Tensor,
+        coefs: torch.Tensor,
+        mat: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Gradient of the kernel
+            k(x,z) = ( const_mix + ((1-const_mix)/d) * sum_j exp(-( |x_j - z_j| / ell )^q) )^p
+        w.r.t. x, accumulated with coefficients 'coefs'.
+
+        Returns: tensor with the same layout as the Lpq case
+                (matches your current caller expectations).
+        """
+
+        # 1) Optional linear transform (same as in Lpq)
+        xm = self._transform_m(x, mat)  # [K, N]
+        zm = self._transform_m(z, mat)  # [M, N]
+
+        # 2) Build u_{k,m} = const_mix + ((1-cmix)/d) * sum_j exp(-(|diff|/ell)^q)
+        #    We compute it in PyTorch for the pairwise (k,m) matrix.
+        #    Shapes: xm[:,None,:] -> [K,1,N]; zm[None,:,:] -> [1,M,N]; broadcast -> [K,M,N]
+        diff = xm[:, None, :] - zm[None, :, :]                      # [K, M, N]
+        r = diff.abs()                                              # [K, M, N]
+
+        ell = float(self.bandwidth)
+        q = float(self.exponent)
+        p = float(self.power)
+
+        exp_terms = torch.exp(-(r / ell).pow(q))                    # [K, M, N]
+        sum_exp = exp_terms.sum(dim=-1)                             # [K, M]
+
+        d = xm.shape[-1]                                            # feature dimension
+        cmix = self.const_mix
+
+        u = cmix + (1.0 - cmix) * (sum_exp / float(d))              # [K, M]
+
+        # 3) Pairwise prefactor a_{k,m} (no coordinate dependence)
+        #    a[k,m] = - p * u^{p-1} * (1-cmix)/d * q / ell^q
+        a_mat = (
+            -p
+            * u.clamp_min(1e-24).pow(p - 1)
+            * (1.0 - cmix)
+            / float(d)
+            * (q / (ell ** q))
+        )  # [K, M]
+
+        # 4) Call the specialized grad op that handles per-coordinate factor:
+        #       exp(-(|diff|/ell)^q) * |diff|^{q-1} * sign(diff)
+        #    Shapes expected by the low-level op match your cdist_grad:
+        #       a[K,M] = a_mat
+        #       b[N,K] = xm^T
+        #       c[O,K] = coefs
+        #       d[N,M] = zm^T
+        #    It also receives q, ell, and eps for numerical stability.
+        b = xm.T.contiguous()  # [N, K]
+        d_ = zm.T.contiguous() # [N, M]
+
+        out = kermac.cdist_grad_expadd(
+            a_mat.contiguous(),   # [K, M]
+            b,                    # [N, K]
+            coefs,                # [O, K]
+            d_,                   # [N, M]
+            q=float(q),
+            ell=float(ell),
+            eps=float(getattr(self, "eps", 0.0)),
+        )  # -> [O, N, M]
+
+        return out.transpose(-2, -1).float()  # [O, M, N] -> match Lpq caller
+
+
     
 if __name__ == '__main__':
     # kernel = LaplaceKernel(bandwidth=2.0, exponent=1.0)

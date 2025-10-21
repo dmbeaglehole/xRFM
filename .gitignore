@@ -140,3 +140,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# External libs
+kermac
+examples/plots
