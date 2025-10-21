@@ -153,7 +153,7 @@ class xRFM:
         if default_rfm_params is None:
             self.default_rfm_params = {
                 'model': {
-                    "kernel": 'l2',
+                    "kernel": 'l2_high_dim',
                     "exponent": 1.0,
                     "bandwidth": 10.0,
                     "diag": False,

@@ -76,12 +76,12 @@ def _make_regression_data(seed=0, n_train=256, n_val=128, d=8, device=None):
     return X[:n_train], y[:n_train], X[n_train:], y[n_train:]
 
 
-def _train_and_predict(kernel, exponent, norm_p=None, bandwidth=10.0, bandwidth_mode='constant', seed=0, iters=3):
+def _train_and_predict(kernel, exponent, norm_p=None, bandwidth=10.0, bandwidth_mode='constant', seed=0, iters=3, d=8):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    X_train, y_train, X_val, y_val = _make_regression_data(seed=seed, device=device)
+    X_train, y_train, X_val, y_val = _make_regression_data(seed=seed, device=device, d=d)
 
     rfm_params = {
         'model': {
@@ -167,6 +167,17 @@ def test_l1_kermac_matches_l1(exponent, bandwidth_mode):
     preds_l1_kermac = _train_and_predict(kernel='l1_kermac', exponent=exponent, bandwidth_mode=bandwidth_mode)
 
     np.testing.assert_allclose(preds_l1_legacy, preds_l1_kermac, atol=1e-1)
+
+
+@pytest.mark.parametrize('bandwidth_mode', ['constant', 'adaptive'])
+@pytest.mark.parametrize('exponent', [0.8, 1.0, 1.2])
+@pytest.mark.parametrize('d', [8, 64])
+def test_l2_high_dim_matches_l2(exponent, bandwidth_mode, d):
+    preds_high_dim = _train_and_predict(kernel='l2_high_dim', exponent=exponent, bandwidth_mode=bandwidth_mode, d=d)
+    preds_l2 = _train_and_predict(kernel='l2', exponent=exponent, bandwidth_mode=bandwidth_mode, d=d)
+
+    # Small numerical differences arise for high dimensions with adaptive bandwidth selection.
+    np.testing.assert_allclose(preds_high_dim, preds_l2, atol=2e-2)
 
 
 @pytest.mark.parametrize(
