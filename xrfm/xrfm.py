@@ -1138,8 +1138,6 @@ class xRFM:
 
         model.fit((X_train, y_train), (X_val, y_val), **self.default_rfm_params['fit'])
         agop = model.agop_best_model
-        print("AGOP on subset", agop.shape)
-        print("M", agop.diag()[:5])
         return agop
 
 
