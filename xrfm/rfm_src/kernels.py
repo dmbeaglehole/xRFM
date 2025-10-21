@@ -526,9 +526,11 @@ class SumPowerLaplaceKernel(Kernel):
         diffs.mul_(-1. / (self.bandwidth ** self.exponent))
         diffs.exp_()
         sum = diffs.sum(dim=-1)
+        print("exp_pairwise torch sum", sum)
         sum.mul_((1.0 - self.const_mix) / x.shape[1])  # normalize so the max sum is 1
         sum.add_(self.const_mix)
         sum.pow_(self.power)
+        print("exp_pairwise torch kernel", sum)
         return sum
 
     def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -777,8 +779,6 @@ class KermacSumPowerLaplaceKernel(Kernel):
     ):
         super().__init__()
         assert bandwidth > 0
-        assert 0 < p <= 2
-        assert 0 < q <= p
         assert eps > 0
         assert 0.0 <= const_mix < 1.0
         assert bandwidth_mode == 'constant', "Adaptive bandwidth currently not supported"
@@ -807,10 +807,22 @@ class KermacSumPowerLaplaceKernel(Kernel):
             )
             return empty, 0
 
+        if not (
+            kermac is not None
+            and x.is_cuda
+            and z.is_cuda
+            and x.dtype == torch.float32
+            and z.dtype == torch.float32
+        ):
+            raise RuntimeError(
+                "KermacSumPowerLaplaceKernel requires CUDA float32 tensors and the kermac module."
+            )
+
         dim_count = x.shape[-1]
-        sum_exp = kermac.cdist_expadd(
+        sum_exp = kermac.cdist(
             x.contiguous(),
             z.contiguous(),
+            kernel_kind="expadd",
             q=float(self.exponent),
             ell=float(self.bandwidth),
         )
@@ -969,14 +981,15 @@ class KermacSumPowerLaplaceKernel(Kernel):
         b = xm.T.contiguous()  # [N, K]
         d_ = zm.T.contiguous() # [N, M]
 
-        out = kermac.cdist_grad_expadd(
+        out = kermac.cdist_grad(
             a_mat.contiguous(),   # [K, M]
             b,                    # [N, K]
             coefs,                # [O, K]
             d_,                   # [N, M]
+            eps=float(getattr(self, "eps", 0.0)),
+            kernel_kind="expadd",
             q=float(q),
             ell=float(ell),
-            eps=float(getattr(self, "eps", 0.0)),
         )  # -> [O, N, M]
 
         return out.transpose(-2, -1).float()  # [O, M, N] -> match Lpq caller

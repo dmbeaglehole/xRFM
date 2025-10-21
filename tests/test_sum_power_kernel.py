@@ -56,6 +56,42 @@ def test_sum_power_kernel_matrix_matches_kermac(device, bandwidth, power, expone
 
 
 @pytest.mark.parametrize(
+    "bandwidth,p,exponent",
+    [
+        (0.9, 1.0, 0.8),
+        (1.5, 1.5, 1.0),
+        (2.1, 2.0, 1.6),
+    ],
+)
+def test_sum_exp_pairwise_matches_manual(device, bandwidth, p, exponent):
+    torch.manual_seed(7)
+    x = torch.randn(6, 4, device=device)
+    z = torch.randn(5, 4, device=device)
+
+    kernel = kernel_module.KermacSumPowerLaplaceKernel(
+        bandwidth=bandwidth,
+        p=p,
+        q=exponent,
+        const_mix=0.2,
+    )
+
+    kermac_sum, dim_count = kernel._sum_exp_pairwise(x, z)
+
+    assert dim_count == x.shape[-1]
+
+    diffs = x[:, None, :] - z[None, :, :]
+    abs_diffs = diffs.abs()
+    expected = torch.exp(-torch.pow(abs_diffs / bandwidth, exponent)).sum(dim=-1)
+
+    torch.cuda.synchronize()
+
+    print("kermac_sum", kermac_sum[:5])
+    print("expected", expected[:5])
+
+    assert torch.allclose(kermac_sum, expected, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize(
     "bandwidth,power,exponent,const_mix",
     [
         (0.7, 1.0, 0.8, 0.0),
