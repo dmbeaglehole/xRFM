@@ -4,6 +4,7 @@ import random
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from xrfm.rfm_src import RFM, matrix_power
 from xrfm.rfm_src.gpu_utils import memory_scaling_factor
@@ -100,6 +101,11 @@ class xRFM:
 
     n_threads : int, optional
         Number of CPU threads to use.
+
+    split_temperature : float, optional
+        Temperature parameter controlling soft routing and ensembling during prediction.
+        If None, predictions use the original hard routing that follows a single leaf.
+        Smaller positive values sharpen the routing distribution, approaching hard decisions.
     
     Notes
     -----
@@ -112,8 +118,8 @@ class xRFM:
                  split_method='top_vector_agop_on_subset', tuning_metric=None,
                  categorical_info=None, default_rfm_params=None,
                  fixed_vector=None, callback=None, classification_mode='zero_one', 
-                 time_limit_s=None, n_threads=None, refill_size=1500, random_state=None, 
-                 **kwargs):
+                 time_limit_s=None, n_threads=None, refill_size=1500, random_state=None,
+                 split_temperature=None, **kwargs):
         self._base_min_subset_size = int(min_subset_size)
         self.rfm_params = rfm_params
         self.max_depth = max_depth
@@ -143,6 +149,16 @@ class xRFM:
             np.random.seed(random_state)
             torch.manual_seed(random_state)
             torch.cuda.manual_seed(random_state)
+
+        if split_temperature is not None and split_temperature < 0:
+            raise ValueError("split_temperature must be positive when specified.")
+        self.split_temperature = split_temperature
+        self._leaf_model_tables = []
+        self._split_direction_tables = []
+        self._split_threshold_tables = []
+        self._leaf_path_tables = []
+        self._leaf_order_tables = []
+        self._tree_caches = []
 
         # parameters for refilling the validation set at leaves
         self.min_val_size = refill_size
@@ -289,6 +305,112 @@ class xRFM:
             leaf_nodes = self._collect_leaf_nodes(t)
             best_agops += [getattr(node['model'], attr_name) for node in leaf_nodes]
         return best_agops
+
+    def _reset_tree_tables(self):
+        """
+        Reset cached lookup tables for fast tree traversal and prediction.
+        """
+        self._leaf_model_tables = []
+        self._split_direction_tables = []
+        self._split_threshold_tables = []
+        self._leaf_path_tables = []
+        self._leaf_order_tables = []
+        self._tree_caches = []
+
+    def _build_tree_cache(self, tree):
+        """
+        Construct lookup tables for a tree to support soft routing.
+
+        Parameters
+        ----------
+        tree : dict
+            Root node of the tree to index.
+
+        Returns
+        -------
+        dict
+            Dictionary containing hash tables for leaf models, split metadata,
+            and traversal paths per leaf.
+        """
+        leaf_models = {}
+        leaf_paths = {}
+        leaf_order = []
+        split_directions = {}
+        split_thresholds = {}
+
+        stack = [(tree, [])]
+        next_node_id = 0
+        next_leaf_id = 0
+
+        while stack:
+            node, path = stack.pop()
+
+            if node['type'] == 'leaf':
+                leaf_id = next_leaf_id
+                next_leaf_id += 1
+                leaf_models[leaf_id] = node['model']
+                leaf_paths[leaf_id] = tuple(path)
+                leaf_order.append(leaf_id)
+            else:
+                node_id = next_node_id
+                next_node_id += 1
+                split_directions[node_id] = node['split_direction']
+                split_thresholds[node_id] = node['split_point']
+
+                stack.append((node['right'], path + [(node_id, False)]))
+                stack.append((node['left'], path + [(node_id, True)]))
+
+        cache = {
+            'leaf_models': leaf_models,
+            'leaf_paths': leaf_paths,
+            'leaf_order': leaf_order,
+            'split_directions': split_directions,
+            'split_thresholds': split_thresholds,
+        }
+        tree['_cache'] = cache
+        return cache
+
+    def _ensure_tree_cache(self, tree):
+        """
+        Ensure lookup tables are available for the provided tree.
+
+        Parameters
+        ----------
+        tree : dict
+            Root node of the tree.
+
+        Returns
+        -------
+        dict
+            Lookup cache for the tree.
+        """
+        cache = tree.get('_cache')
+        if cache is None:
+            cache = self._build_tree_cache(tree)
+        return cache
+
+    def _register_tree_cache(self, tree):
+        """
+        Register a tree's lookup tables with the model-level caches.
+
+        Parameters
+        ----------
+        tree : dict
+            Root node of the tree.
+
+        Returns
+        -------
+        dict
+            Lookup cache for the tree.
+        """
+        cache = self._ensure_tree_cache(tree)
+        self._leaf_model_tables.append(cache['leaf_models'])
+        self._split_direction_tables.append(cache['split_directions'])
+        self._split_threshold_tables.append(cache['split_thresholds'])
+        self._leaf_path_tables.append(cache['leaf_paths'])
+        self._leaf_order_tables.append(cache['leaf_order'])
+        self._tree_caches.append(cache)
+        return cache
 
     def collect_best_agops(self):
         """
@@ -754,6 +876,7 @@ class xRFM:
 
         # Build multiple trees
         self.trees = []
+        self._reset_tree_tables()
         start_time = time.time()
         for iter in tqdm(range(self.n_trees), desc="Building trees"):
             if iter > 0 and self.time_limit_s is not None and (iter + 1) / iter * (
@@ -767,6 +890,7 @@ class xRFM:
             else:
                 tree = self._build_tree(X, y, X_val, y_val, is_root=True, time_limit_s=time_limit_s, **kwargs)
             self.trees.append(tree)
+            self._register_tree_cache(tree)
 
             if tree['type'] == 'leaf':
                 print("Tree has no split, stopping training")
@@ -925,6 +1049,16 @@ class xRFM:
 
     def _predict_tree(self, X, tree, proba=False):
         """
+        Dispatch tree prediction to hard or soft routing depending on configuration.
+        """
+        if not self.split_temperature:
+            print("Using hard routing for tree prediction")
+            return self._predict_tree_hard(X, tree, proba=proba)
+        print("Using soft routing for tree prediction")
+        return self._predict_tree_soft(X, tree, proba=proba)
+
+    def _predict_tree_hard(self, X, tree, proba=False):
+        """
         Make predictions for all samples using a single tree.
 
         Parameters
@@ -967,6 +1101,89 @@ class xRFM:
 
         order = torch.cat(X_leaf_group_indices, dim=0)
         return reorder_tensor(torch.cat(predictions, dim=0), order)
+
+    def _predict_tree_soft(self, X, tree, proba=False):
+        """
+        Perform soft routing over all leaves and aggregate predictions.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Input features
+        tree : dict
+            Tree to use for prediction
+
+        Returns
+        -------
+        torch.Tensor
+            Aggregated predictions for all samples
+        """
+        cache = self._ensure_tree_cache(tree)
+        leaf_models = cache['leaf_models']
+        leaf_paths = cache['leaf_paths']
+        leaf_order = cache['leaf_order']
+        split_directions = cache['split_directions']
+        split_thresholds = cache['split_thresholds']
+
+        if not leaf_order:
+            # Tree reduced to a single leaf
+            sole_leaf = next(iter(leaf_models.values()))
+            return sole_leaf.predict_proba(X) if proba else sole_leaf.predict(X)
+
+        temperature = self.split_temperature
+        if temperature is None:
+            # Should not happen because dispatcher handles None, but keep safe guard.
+            return self._predict_tree_hard(X, tree, proba=proba)
+
+        if temperature <= 0:
+            raise ValueError("split_temperature must be positive.")
+
+        inv_temperature = 1.0 / temperature
+
+        # Compute logits for each split node once for all samples
+        node_logits = {}
+        for node_id, direction in split_directions.items():
+            split_point = split_thresholds[node_id]
+            logits = (X @ direction) - split_point
+            node_logits[node_id] = logits * inv_temperature
+
+        # Aggregate log probabilities for each leaf path
+        log_leaf_probs = []
+        for leaf_id in leaf_order:
+            path = leaf_paths[leaf_id]
+            if not path:
+                log_prob = torch.zeros(X.shape[0], device=X.device)
+            else:
+                log_prob = torch.zeros(X.shape[0], device=X.device)
+                for node_id, took_left in path:
+                    logits = node_logits[node_id]
+                    if took_left:
+                        log_prob = log_prob + F.logsigmoid(-logits)
+                    else:
+                        log_prob = log_prob + F.logsigmoid(logits)
+            log_leaf_probs.append(log_prob)
+
+        leaf_log_prob_tensor = torch.stack(log_leaf_probs, dim=1)  # (n_samples, n_leaves)
+        leaf_probs = torch.exp(torch.clamp(leaf_log_prob_tensor, min=-50.0))
+
+        weights = torch.softmax(leaf_probs / temperature, dim=1)
+
+        leaf_preds = []
+        for leaf_id in leaf_order:
+            model = leaf_models[leaf_id]
+            preds = model.predict_proba(X) if proba else model.predict(X)
+            if not isinstance(preds, torch.Tensor):
+                preds = torch.as_tensor(preds, device=self.device)
+            else:
+                preds = preds.to(self.device)
+            if preds.dim() == 1:
+                preds = preds.unsqueeze(-1)
+            leaf_preds.append(preds)
+
+        preds_tensor = torch.stack(leaf_preds, dim=1)  # (n_samples, n_leaves, n_outputs)
+        weights = weights.unsqueeze(-1)
+        aggregated = torch.sum(weights * preds_tensor, dim=1)
+        return aggregated
 
 
 
@@ -1045,8 +1262,11 @@ class xRFM:
                 tree['right'] = set_leaf_model_single_tree(tree['right'])
                 return tree
 
+        self._reset_tree_tables()
         for param_tree in param_trees:
-            self.trees.append(set_leaf_model_single_tree(param_tree))
+            tree = set_leaf_model_single_tree(param_tree)
+            self.trees.append(tree)
+            self._register_tree_cache(tree)
 
         return
 

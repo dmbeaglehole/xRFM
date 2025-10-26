@@ -85,3 +85,45 @@ def memory_scaling_factor(device=None, *, quadratic=False, base_memory_bytes=BAS
     if quadratic:
         return math.sqrt(memory_ratio)
     return memory_ratio
+
+
+def _bytes_to_gb_str(num_bytes: int) -> str:
+    gb = num_bytes / (1024**3)
+    return f"{gb:.2f} GB"
+
+
+def print_vram(prefix: str = "", device=None) -> None:
+    """
+    Print a concise line with current CUDA VRAM usage: free/total and allocated/reserved.
+    Controlled by env XRFM_VRAM_LOG=1 to reduce noise by default.
+    """
+    if not torch.cuda.is_available():
+        print(f"{prefix} [VRAM] CUDA not available")
+        return
+
+    if device is None:
+        device = torch.cuda.current_device()
+
+    device = torch.device(device)
+    if device.type != 'cuda':
+        print(f"{prefix} [VRAM] device={device} is not CUDA")
+        return
+
+    with torch.cuda.device(device):
+        try:
+            free_b, total_b = torch.cuda.mem_get_info()
+        except RuntimeError:
+            total_b = torch.cuda.get_device_properties(device).total_memory
+            allocated_b = torch.cuda.memory_allocated()
+            reserved_b = torch.cuda.memory_reserved()
+            free_b = total_b - max(allocated_b, reserved_b)
+        allocated_b = torch.cuda.memory_allocated()
+        reserved_b = torch.cuda.memory_reserved()
+
+    name = torch.cuda.get_device_name(device)
+    msg = (
+        f"{prefix} [VRAM] dev={device.index} {name} | "
+        f"free/total={_bytes_to_gb_str(free_b)}/{_bytes_to_gb_str(total_b)} | "
+        f"alloc/res={_bytes_to_gb_str(allocated_b)}/{_bytes_to_gb_str(reserved_b)}"
+    )
+    print(msg)

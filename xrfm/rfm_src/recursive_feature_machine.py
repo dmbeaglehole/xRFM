@@ -663,14 +663,13 @@ class RFM(torch.nn.Module):
             centers = centers.to(self.device)
             targets = targets.to(self.device)
 
-
         kernel_matrix = self.kernel(centers, centers)  
 
         # Apply direct K diagonal regularization only for closed-form LSTSQ solvers.
         # For logistic IRLS, regularization is handled inside the Newton step as (WK + reg I).
         if self.reg > 0:
             kernel_matrix.diagonal().add_(self.reg)
-        
+
         try:
             if self.solver == 'solve':
                 out = torch.linalg.solve(kernel_matrix, targets)
@@ -688,7 +687,6 @@ class RFM(torch.nn.Module):
             max_row_sum = row_sums.max()
             kernel_matrix.diagonal().add_(max_row_sum*1e-2) # 1% of max row eigenvalue bound 
 
-            print(f"Max_row_sum={max_row_sum}")
             out = torch.linalg.solve(kernel_matrix, targets)
         
         return out

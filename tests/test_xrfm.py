@@ -5,9 +5,83 @@ from sklearn.metrics import root_mean_squared_error, accuracy_score
 import torch
 from sklearn.model_selection import train_test_split
 import numpy as np
+import torch.nn.functional as F
 
 from xrfm import xRFM
 from xrfm.rfm_src import kernels as kernel_module
+
+
+class _DummyLeaf:
+    def __init__(self, value):
+        self.value = value
+
+    def predict(self, X):
+        return torch.full((X.shape[0], 1), self.value, dtype=X.dtype, device=X.device)
+
+    def predict_proba(self, X):
+        return self.predict(X)
+
+
+def _make_manual_tree(model, left_value=1.0, right_value=0.0):
+    split_direction = torch.tensor([1.0, 0.0], dtype=torch.float32, device=model.device)
+    split_point = torch.tensor(0.0, dtype=torch.float32, device=model.device)
+    empty_indices = torch.zeros(0, dtype=torch.long, device=model.device)
+    tree = {
+        'type': 'split',
+        'split_direction': split_direction,
+        'split_point': split_point,
+        'left': {
+            'type': 'leaf',
+            'model': _DummyLeaf(left_value),
+            'train_indices': empty_indices,
+            'is_root': False
+        },
+        'right': {
+            'type': 'leaf',
+            'model': _DummyLeaf(right_value),
+            'train_indices': empty_indices,
+            'is_root': False
+        },
+        'is_root': True
+    }
+    return tree
+
+
+def _make_manual_model(split_temperature=None):
+    device = torch.device('cpu')
+    model = xRFM(min_subset_size=1, n_trees=1, device=device, split_temperature=split_temperature)
+    model.n_classes_ = 0
+    tree = _make_manual_tree(model)
+    model.trees = [tree]
+    model._register_tree_cache(tree)
+    return model, tree
+
+
+def test_hard_routing_dispatch_matches_hard_path():
+    model, tree = _make_manual_model(split_temperature=None)
+    X = torch.tensor([[-1.0, 0.0], [2.0, 0.0], [0.0, 0.0]], dtype=torch.float32, device=model.device)
+    pred_hard = model._predict_tree_hard(X, tree)
+    pred_dispatch = model._predict_tree(X, tree)
+    torch.testing.assert_close(pred_dispatch, pred_hard)
+
+
+def test_soft_routing_manual_tree_matches_expected_weights():
+    model, tree = _make_manual_model(split_temperature=None)
+    model.split_temperature = 2.0
+    X = torch.tensor([[-1.0, 0.0], [2.0, 0.0], [0.5, 0.0]], dtype=torch.float32, device=model.device)
+    preds = model._predict_tree(X, tree)
+
+    temperature = model.split_temperature
+    inv_temperature = 1.0 / temperature
+    logits = inv_temperature * (X[:, 0] - 0.0)
+    log_prob_left = F.logsigmoid(-logits)
+    log_prob_right = F.logsigmoid(logits)
+    leaf_log_probs = torch.stack([log_prob_left, log_prob_right], dim=1)
+    leaf_probs = torch.exp(torch.clamp(leaf_log_probs, min=-50.0))
+    weights = torch.softmax(leaf_probs / temperature, dim=1)
+    expected = weights[:, :1]
+
+    torch.testing.assert_close(preds, expected)
 
 @pytest.mark.parametrize(
     'time_limit_s', [0, None]

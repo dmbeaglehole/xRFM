@@ -1,6 +1,8 @@
 # publish script
 publish.sh
 
+# text
+xrfm_desc.txt
 
 # Ignore all files in the examples directory
 examples/california_housing.py
@@ -140,3 +142,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# External libs
+kermac
+
+# Plots
+examples/plots
