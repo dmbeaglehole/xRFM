@@ -1111,11 +1111,13 @@ class RFM(torch.nn.Module):
                             light_kernels=Union[LaplaceKernel, LightLaplaceKernel, KermacLpqLaplaceKernel, KermacProductLaplaceKernel]):
         """Computes the optimal batch size for AGOP."""
         if self.device in ['cpu', torch.device('cpu')] or isinstance(self.kernel_obj, light_kernels):
+            print("Using cheap batch size")
             # cpu and light kernels are less memory intensive, use fewer but larger batches scaled by free GPU memory
             cheap_batch_cap = int(max_cheap_batch_size * memory_scaling_factor(self.device))
             cheap_batch_cap = max(cheap_batch_cap, 1)
             M_batch_size = max(min(n, cheap_batch_cap), 1)
         else:
+            print("Using expensive batch size")
             available_memory, _ = get_gpu_memory_bytes(self.device)
             if not available_memory:
                 M_batch_size = max(min(n, max_batch_size), 1)

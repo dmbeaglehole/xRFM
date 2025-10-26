@@ -84,7 +84,7 @@ def memory_scaling_factor(device=None, *, quadratic=False, base_memory_bytes=BAS
     memory_ratio = max(free_bytes / base_memory_bytes, 1e-3)
     if quadratic:
         return math.sqrt(memory_ratio)
-    return memory_ratio
+    return min(memory_ratio, 1) # never use more than 40GB VRAM setting
 
 
 def _bytes_to_gb_str(num_bytes: int) -> str:

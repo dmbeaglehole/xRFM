@@ -1330,7 +1330,7 @@ class xRFM:
         return state_dict
 
 
-    def _get_agop_on_subset(self, X, y, subset_size=50_000, time_limit_s=None):
+    def _get_agop_on_subset(self, X, y, subset_size=50_000, time_limit_s=None, max_subset_size_for_split_rfm=60_000):
         """
 
         This method fits a base RFM model on a subset of the data to compute the AGOP matrix,
@@ -1344,6 +1344,8 @@ class xRFM:
             Target values of shape (n_samples, n_targets)
         subset_size : int, default=50000
             Maximum size of the subset to use for AGOP computation
+        max_subset_size_for_split_rfm : int, default=60000
+            Maximum size of the subset to use for AGOP computation
 
         Returns
         -------
@@ -1355,7 +1357,7 @@ class xRFM:
 
         base_subset_size = int(subset_size)
         scaled_subset_size = max(int(base_subset_size * memory_scaling_factor(self.device, quadratic=True)), 1)
-        subset_size = min(scaled_subset_size, len(X))
+        subset_size = min(scaled_subset_size, len(X), max_subset_size_for_split_rfm)
         subset_train_size = max(int(subset_size * 0.95), 1)  # 95/5 split, probably won't need the val data.
 
         subset_indices = torch.randperm(len(X))

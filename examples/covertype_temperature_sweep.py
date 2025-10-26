@@ -9,11 +9,11 @@ from sklearn.datasets import fetch_covtype
 from xrfm import xRFM
 
 
-TOTAL_TRAIN = 10_000
+TOTAL_TRAIN = 100_000
 TOTAL_VAL = 20_000
 TOTAL_TEST = 20_000
-MIN_SUBSET_SIZE = 2000
-TEMPERATURES = [None] + list(np.logspace(np.log10(0.1), np.log10(100), num=20))
+MIN_SUBSET_SIZE = 25_000
+TEMPERATURES = [None] + list(np.logspace(np.log10(0.1), np.log10(200), num=20))
 
 
 def prepare_data(device: torch.device):
