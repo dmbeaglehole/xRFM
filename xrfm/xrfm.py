@@ -283,7 +283,7 @@ class xRFM:
         Returns
         -------
         list
-            List of all TabRFM models at leaf nodes
+            List of all xRFM models at leaf nodes
         """
         if node['type'] == 'leaf':
             return [node]
@@ -584,7 +584,7 @@ class xRFM:
                 print("Refilling validation set, because at least one split has been made.")
                 X, y, X_val, y_val, train_indices = self._refill_val_set(X, y, X_val, y_val, train_indices)
 
-            # Create and fit a TabRFM model on this subset
+            # Create and fit a xRFM model on this subset
             model = RFM(**self.rfm_params['model'], tuning_metric=self.tuning_metric,
                         categorical_info=self.categorical_info, device=self.device, time_limit_s=time_limit_s,
                         **self.extra_rfm_params_)
@@ -1021,7 +1021,7 @@ class xRFM:
     def predict_proba(self, X):
         """
         Predict class probabilities by averaging across all trees.
-        Only usable if the underlying TabRFM models were fitted for classification.
+        Only usable if the underlying xRFM models were fitted for classification.
 
         Parameters
         ----------
