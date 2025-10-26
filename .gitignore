@@ -145,6 +145,7 @@ dmypy.json
 
 # External libs
 kermac
+kaggle
 
 # Plots
 examples/plots
