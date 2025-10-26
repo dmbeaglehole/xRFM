@@ -46,6 +46,7 @@ def get_gpu_memory_bytes(device=None) -> Tuple[Optional[int], Optional[int]]:
     if device.type != 'cuda':
         return None, None
 
+    torch.cuda.empty_cache()
     with torch.cuda.device(device):
         try:
             free_bytes, total_bytes = torch.cuda.mem_get_info()
