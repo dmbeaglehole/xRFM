@@ -1172,10 +1172,15 @@ class xRFM:
                         log_prob = log_prob + F.logsigmoid(logits)
             log_leaf_probs.append(log_prob)
 
-        leaf_log_prob_tensor = torch.stack(log_leaf_probs, dim=1)  # (n_samples, n_leaves)
-        leaf_probs = torch.exp(torch.clamp(leaf_log_prob_tensor, min=-50.0))
-
-        weights = torch.softmax(leaf_probs / temperature, dim=1)
+        leaf_log_prob_tensor = torch.clamp(torch.stack(log_leaf_probs, dim=1), min=-50.0)  # (n_samples, n_leaves)
+        max_log_prob = torch.max(leaf_log_prob_tensor, dim=1, keepdim=True).values
+        stable_log_probs = leaf_log_prob_tensor - max_log_prob
+        leaf_probs = torch.exp(stable_log_probs)
+        normalizer = torch.clamp(
+            leaf_probs.sum(dim=1, keepdim=True),
+            min=torch.finfo(leaf_probs.dtype).tiny
+        )
+        weights = leaf_probs / normalizer
 
         leaf_preds = []
         for leaf_id in leaf_order:

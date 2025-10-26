@@ -12,8 +12,8 @@ from xrfm import xRFM
 TOTAL_TRAIN = 10_000
 TOTAL_VAL = 20_000
 TOTAL_TEST = 20_000
-MIN_SUBSET_SIZE = 1000
-TEMPERATURES = [None] + list(np.logspace(np.log10(0.01), np.log10(2.5), num=20))
+MIN_SUBSET_SIZE = 2000
+TEMPERATURES = [None] + list(np.logspace(np.log10(0.1), np.log10(100), num=20))
 
 
 def prepare_data(device: torch.device):
@@ -65,7 +65,7 @@ def build_model(device: torch.device):
         tuning_metric='accuracy',
         split_method='top_vector_agop_on_subset',
         split_temperature=None,
-        n_threads=1,
+        overlap_fraction=0.1,
     )
     return model
 

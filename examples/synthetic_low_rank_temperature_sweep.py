@@ -20,7 +20,7 @@ NOISE_STD = 0.25
 RANDOM_SEED = 0
 
 MIN_SUBSET_SIZE = 5_000
-TEMPERATURES = [None] + list(np.logspace(np.log10(0.01), np.log10(2.5), num=20))
+TEMPERATURES = [None] + list(np.logspace(np.log10(0.01), np.log10(3), num=20))
 
 
 def _make_generator(device: torch.device) -> torch.Generator:
