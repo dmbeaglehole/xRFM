@@ -107,7 +107,7 @@ class xRFM:
         If None, predictions use the original hard routing that follows a single leaf.
         Smaller positive values sharpen the routing distribution, approaching hard decisions.
     
-    overlap_fraction : float, default=0.1
+    overlap_fraction : float, default=0.0
         Fraction of the dataset (per side) to include around the split point in both child leaves.
         Each leaf receives an additional overlap of size 2 * overlap_fraction of the original data.
     
@@ -123,7 +123,7 @@ class xRFM:
                  categorical_info=None, default_rfm_params=None,
                  fixed_vector=None, callback=None, classification_mode='zero_one', 
                  time_limit_s=None, n_threads=None, refill_size=1500, random_state=None,
-                 split_temperature=None, overlap_fraction=0.1, **kwargs):
+                 split_temperature=None, overlap_fraction=0.0, **kwargs):
         self._base_min_subset_size = int(min_subset_size)
         self.rfm_params = rfm_params
         self.max_depth = max_depth
