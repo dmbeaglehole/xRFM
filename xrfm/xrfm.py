@@ -107,6 +107,10 @@ class xRFM:
         If None, predictions use the original hard routing that follows a single leaf.
         Smaller positive values sharpen the routing distribution, approaching hard decisions.
     
+    overlap_fraction : float, default=0.1
+        Fraction of the dataset (per side) to include around the split point in both child leaves.
+        Each leaf receives an additional overlap of size 2 * overlap_fraction of the original data.
+    
     Notes
     -----
     The model follows sklearn's estimator interface with fit, predict, predict_proba, and score methods,
@@ -119,7 +123,7 @@ class xRFM:
                  categorical_info=None, default_rfm_params=None,
                  fixed_vector=None, callback=None, classification_mode='zero_one', 
                  time_limit_s=None, n_threads=None, refill_size=1500, random_state=None,
-                 split_temperature=None, **kwargs):
+                 split_temperature=None, overlap_fraction=0.1, **kwargs):
         self._base_min_subset_size = int(min_subset_size)
         self.rfm_params = rfm_params
         self.max_depth = max_depth
@@ -139,6 +143,9 @@ class xRFM:
         self.time_limit_s = time_limit_s
         self.n_threads = n_threads
         self.extra_rfm_params_ = {}
+        if not (0.0 <= overlap_fraction <= 0.5):
+            raise ValueError("overlap_fraction must be in [0.0, 0.5].")
+        self.overlap_fraction = overlap_fraction
 
         # scale the maximum leaf size relative to a 40GB GPU; assume quadratic memory growth
         subset_scale = memory_scaling_factor(self.device, quadratic=True)
@@ -479,7 +486,12 @@ class xRFM:
 
     def _get_balanced_split(self, projections, train_median):
         """
-        Get balanced left and right masks by assigning median points to the smaller split.
+        Construct balanced boolean masks with an optional central overlap.
+
+        The samples are ordered by their projection values. The lowest portion
+        goes uniquely to the left leaf, the highest portion uniquely to the right
+        leaf, and the middle ``2 * overlap_fraction`` share of samples are added
+        to both leaves.
         
         Parameters
         ----------
@@ -493,46 +505,43 @@ class xRFM:
         tuple
             (left_mask, right_mask) balanced masks
         """
-        # Initial split
-        left_mask = projections < train_median
-        right_mask = projections > train_median
-        median_mask = projections == train_median
+        _ = train_median  # kept for interface compatibility
 
-        # Count elements in each split
-        n_left, n_right = left_mask.sum(), right_mask.sum()
+        n_samples = projections.numel()
+        if n_samples == 0:
+            raise ValueError("Cannot split an empty projection tensor.")
 
-        # If one split is larger, assign median points to smaller split
-        if n_left != n_right and median_mask.any():
-            median_indices = torch.where(median_mask)[0]
+        _, sorted_indices = torch.sort(projections)
 
-            if n_left < n_right:
-                # Add median points to left split
-                n_to_add = min(median_indices.size(0), n_right - n_left)
-                left_mask[median_indices[:n_to_add]] = True
-            else:
-                # Add median points to right split
-                n_to_add = min(median_indices.size(0), n_left - n_right)
-                right_mask[median_indices[:n_to_add]] = True
+        overlap_count = int(round(2 * self.overlap_fraction * n_samples))
+        overlap_count = max(0, min(overlap_count, n_samples))
 
-            # Update median mask to only include unused median points
-            if n_to_add > 0:
-                median_mask[median_indices[:n_to_add]] = False
+        remaining = n_samples - overlap_count
+        left_unique_count = (remaining + 1) // 2  # ceil division
+        right_unique_count = remaining // 2
 
-        # Distribute any remaining median points evenly between left and right splits
-        if median_mask.any():
-            median_indices = torch.where(median_mask)[0]
-            n_median = median_indices.size(0)
-            # Split half to left, half to right (first half to left, second half to right)
-            left_half = median_indices[:n_median // 2]
-            right_half = median_indices[n_median // 2:]
+        overlap_start = left_unique_count
+        overlap_end = overlap_start + overlap_count
 
-            # Update masks
-            left_mask[left_half] = True
-            right_mask[right_half] = True
+        left_unique_indices = sorted_indices[:left_unique_count]
+        overlap_indices = sorted_indices[overlap_start:overlap_end]
+        right_unique_indices = sorted_indices[overlap_end:]
 
-        assert not (left_mask & right_mask).any(), "Left and right masks should not overlap"
+        assert right_unique_indices.numel() == right_unique_count, "Right split size mismatch"
+
+        left_mask = torch.zeros(n_samples, dtype=torch.bool, device=projections.device)
+        right_mask = torch.zeros_like(left_mask)
+
+        if left_unique_indices.numel() > 0:
+            left_mask[left_unique_indices] = True
+        if right_unique_indices.numel() > 0:
+            right_mask[right_unique_indices] = True
+        if overlap_indices.numel() > 0:
+            left_mask[overlap_indices] = True
+            right_mask[overlap_indices] = True
+
+        assert left_mask.any() and right_mask.any(), "Each split must contain at least one element"
         assert left_mask.sum() - right_mask.sum() <= 1, "Left and right masks should have the same number of elements"
-
         return left_mask, right_mask
 
     def _build_tree(self, X, y, X_val, y_val, train_indices=None, depth=0, avg_M=None, is_root=False,

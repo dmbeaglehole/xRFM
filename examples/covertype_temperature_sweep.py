@@ -12,7 +12,7 @@ from xrfm import xRFM
 TOTAL_TRAIN = 10_000
 TOTAL_VAL = 20_000
 TOTAL_TEST = 20_000
-MIN_SUBSET_SIZE = 50
+MIN_SUBSET_SIZE = 1000
 TEMPERATURES = [None] + list(np.logspace(np.log10(0.01), np.log10(2.5), num=10))
 
 

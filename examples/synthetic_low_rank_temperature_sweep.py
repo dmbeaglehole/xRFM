@@ -20,7 +20,7 @@ NOISE_STD = 0.25
 RANDOM_SEED = 0
 
 MIN_SUBSET_SIZE = 5_000
-TEMPERATURES = [None] + list(np.logspace(np.log10(0.01), np.log10(2.5), num=10))
+TEMPERATURES = [None] + list(np.logspace(np.log10(0.01), np.log10(2.5), num=20))
 
 
 def _make_generator(device: torch.device) -> torch.Generator:
@@ -80,6 +80,7 @@ def build_model(device: torch.device):
         tuning_metric="accuracy",
         split_method="top_vector_agop_on_subset",
         split_temperature=None,
+        overlap_fraction=0.1,
         n_threads=1,
     )
     return model
