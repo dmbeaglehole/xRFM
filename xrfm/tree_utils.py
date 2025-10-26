@@ -39,6 +39,7 @@ def get_param_tree(tree, is_root=False):
         - 'type': 'node'
         - 'split_direction': Feature space direction vector used for splitting
         - 'split_point': Threshold value for the split decision
+        - 'adaptive_temp_scaling': Inter-quartile range used to scale temperature at this node
         - 'left': Parameter tree for left child (recursively extracted)
         - 'right': Parameter tree for right child (recursively extracted)
         - 'is_root': Boolean indicating if this is the root node
@@ -80,6 +81,7 @@ def get_param_tree(tree, is_root=False):
             'type': 'node',
             'split_direction': tree['split_direction'],
             'split_point': tree['split_point'],
+            'adaptive_temp_scaling': tree.get('adaptive_temp_scaling', 1.0),
             'left': get_param_tree(tree['left'], is_root=False),
             'right': get_param_tree(tree['right'], is_root=False),
             'is_root': is_root

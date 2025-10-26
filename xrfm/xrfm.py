@@ -1,5 +1,6 @@
 import sys
 import time
+import math
 import random
 
 import numpy as np
@@ -103,7 +104,9 @@ class xRFM:
         Number of CPU threads to use.
 
     split_temperature : float, optional
-        Temperature parameter controlling soft routing and ensembling during prediction.
+        Global temperature constant controlling soft routing and ensembling during prediction.
+        Each split node j uses an adaptive temperature equal to ``split_temperature * IQR_j``,
+        where ``IQR_j`` is the inter-quartile range of the projection values observed at that node.
         If None, predictions use the original hard routing that follows a single leaf.
         Smaller positive values sharpen the routing distribution, approaching hard decisions.
     
@@ -163,6 +166,7 @@ class xRFM:
         self._leaf_model_tables = []
         self._split_direction_tables = []
         self._split_threshold_tables = []
+        self._split_temp_scaling_tables = []
         self._leaf_path_tables = []
         self._leaf_order_tables = []
         self._tree_caches = []
@@ -320,6 +324,7 @@ class xRFM:
         self._leaf_model_tables = []
         self._split_direction_tables = []
         self._split_threshold_tables = []
+        self._split_temp_scaling_tables = []
         self._leaf_path_tables = []
         self._leaf_order_tables = []
         self._tree_caches = []
@@ -344,6 +349,7 @@ class xRFM:
         leaf_order = []
         split_directions = {}
         split_thresholds = {}
+        split_temp_scalings = {}
 
         stack = [(tree, [])]
         next_node_id = 0
@@ -363,6 +369,7 @@ class xRFM:
                 next_node_id += 1
                 split_directions[node_id] = node['split_direction']
                 split_thresholds[node_id] = node['split_point']
+                split_temp_scalings[node_id] = node.get('adaptive_temp_scaling', 1.0)
 
                 stack.append((node['right'], path + [(node_id, False)]))
                 stack.append((node['left'], path + [(node_id, True)]))
@@ -373,6 +380,7 @@ class xRFM:
             'leaf_order': leaf_order,
             'split_directions': split_directions,
             'split_thresholds': split_thresholds,
+            'split_temp_scalings': split_temp_scalings,
         }
         tree['_cache'] = cache
         return cache
@@ -394,6 +402,9 @@ class xRFM:
         cache = tree.get('_cache')
         if cache is None:
             cache = self._build_tree_cache(tree)
+        elif 'split_temp_scalings' not in cache:
+            split_temp_scalings = {node_id: 1.0 for node_id in cache.get('split_directions', {}).keys()}
+            cache['split_temp_scalings'] = split_temp_scalings
         return cache
 
     def _register_tree_cache(self, tree):
@@ -414,6 +425,7 @@ class xRFM:
         self._leaf_model_tables.append(cache['leaf_models'])
         self._split_direction_tables.append(cache['split_directions'])
         self._split_threshold_tables.append(cache['split_thresholds'])
+        self._split_temp_scaling_tables.append(cache['split_temp_scalings'])
         self._leaf_path_tables.append(cache['leaf_paths'])
         self._leaf_order_tables.append(cache['leaf_order'])
         self._tree_caches.append(cache)
@@ -638,6 +650,17 @@ class xRFM:
         # Find median as split point
         train_median = torch.median(projections)
 
+        # Compute inter-quartile range to scale the gating temperature adaptively
+        try:
+            q1 = torch.quantile(projections, 0.25)
+            q3 = torch.quantile(projections, 0.75)
+            iqr = (q3 - q1).clamp_min(1e-6)
+            adaptive_temp_scaling = float(iqr.item())
+            if not math.isfinite(adaptive_temp_scaling) or adaptive_temp_scaling <= 0.0:
+                adaptive_temp_scaling = 1.0
+        except RuntimeError:
+            adaptive_temp_scaling = 1.0
+
         # Get balanced split for training set to avoid infinite recursion with repeated data
         left_mask, right_mask = self._get_balanced_split(projections, train_median)
 
@@ -677,7 +700,8 @@ class xRFM:
             'split_point': train_median,
             'left': left_tree,
             'right': right_tree,
-            'is_root': is_root
+            'is_root': is_root,
+            'adaptive_temp_scaling': adaptive_temp_scaling,
         }
 
     def _refill_val_set(self, X, y, X_val, y_val, train_indices):
@@ -1139,22 +1163,30 @@ class xRFM:
             sole_leaf = next(iter(leaf_models.values()))
             return sole_leaf.predict_proba(X) if proba else sole_leaf.predict(X)
 
-        temperature = self.split_temperature
-        if temperature is None:
+        temperature_constant = self.split_temperature
+        if temperature_constant is None:
             # Should not happen because dispatcher handles None, but keep safe guard.
             return self._predict_tree_hard(X, tree, proba=proba)
 
-        if temperature <= 0:
+        if temperature_constant <= 0:
             raise ValueError("split_temperature must be positive.")
-
-        inv_temperature = 1.0 / temperature
 
         # Compute logits for each split node once for all samples
         node_logits = {}
+        temp_scalings = cache.get('split_temp_scalings', {})
         for node_id, direction in split_directions.items():
             split_point = split_thresholds[node_id]
             logits = (X @ direction) - split_point
-            node_logits[node_id] = logits * inv_temperature
+            node_scale = temp_scalings.get(node_id, 1.0)
+            if isinstance(node_scale, torch.Tensor):
+                node_scale = node_scale.item()
+            if not math.isfinite(node_scale) or node_scale <= 0.0:
+                node_scale = 1.0
+            node_temperature = temperature_constant * node_scale
+            if not math.isfinite(node_temperature) or node_temperature <= 0.0:
+                node_temperature = temperature_constant
+            inv_node_temperature = 1.0 / node_temperature
+            node_logits[node_id] = logits * inv_node_temperature
 
         # Aggregate log probabilities for each leaf path
         log_leaf_probs = []
@@ -1274,6 +1306,7 @@ class xRFM:
             else:
                 tree['left'] = set_leaf_model_single_tree(tree['left'])
                 tree['right'] = set_leaf_model_single_tree(tree['right'])
+                tree.setdefault('adaptive_temp_scaling', 1.0)
                 return tree
 
         self._reset_tree_tables()

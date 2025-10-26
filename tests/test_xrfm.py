@@ -42,7 +42,8 @@ def _make_manual_tree(model, left_value=1.0, right_value=0.0):
             'train_indices': empty_indices,
             'is_root': False
         },
-        'is_root': True
+        'is_root': True,
+        'adaptive_temp_scaling': 1.0,
     }
     return tree
 
@@ -77,8 +78,15 @@ def test_soft_routing_manual_tree_matches_expected_weights():
     log_prob_left = F.logsigmoid(-logits)
     log_prob_right = F.logsigmoid(logits)
     leaf_log_probs = torch.stack([log_prob_left, log_prob_right], dim=1)
-    leaf_probs = torch.exp(torch.clamp(leaf_log_probs, min=-50.0))
-    weights = torch.softmax(leaf_probs / temperature, dim=1)
+    leaf_log_probs = torch.clamp(leaf_log_probs, min=-50.0)
+    max_log_prob = torch.max(leaf_log_probs, dim=1, keepdim=True).values
+    stable_log_probs = leaf_log_probs - max_log_prob
+    leaf_probs = torch.exp(stable_log_probs)
+    normalizer = torch.clamp(
+        leaf_probs.sum(dim=1, keepdim=True),
+        min=torch.finfo(leaf_probs.dtype).tiny
+    )
+    weights = leaf_probs / normalizer
     expected = weights[:, :1]
 
     torch.testing.assert_close(preds, expected)
