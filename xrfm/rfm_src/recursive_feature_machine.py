@@ -1107,7 +1107,7 @@ class RFM(torch.nn.Module):
 
         return Ms if return_Ms else None
     
-    def _compute_optimal_M_batch(self, n, c, d, scalar_size=4, mem_constant=2., max_batch_size=10_000, max_cheap_batch_size=20_000, 
+    def _compute_optimal_M_batch(self, n, c, d, scalar_size=4, mem_constant=2., max_batch_size=10_000, max_cheap_batch_size=10_000, 
                             light_kernels=Union[LaplaceKernel, LightLaplaceKernel, KermacLpqLaplaceKernel, KermacProductLaplaceKernel]):
         """Computes the optimal batch size for AGOP."""
         if self.device in ['cpu', torch.device('cpu')] or isinstance(self.kernel_obj, light_kernels):

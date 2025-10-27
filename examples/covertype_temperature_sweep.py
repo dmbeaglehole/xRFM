@@ -1,7 +1,6 @@
 import time
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from sklearn.datasets import fetch_covtype
@@ -9,10 +8,10 @@ from sklearn.datasets import fetch_covtype
 from xrfm import xRFM
 
 
-TOTAL_TRAIN = 50_000
+TOTAL_TRAIN = 100_000
 TOTAL_VAL = 20_000
 TOTAL_TEST = 20_000
-MIN_SUBSET_SIZE = 10_000
+MIN_SUBSET_SIZE = 25_000
 TEMPERATURES = [None] + list(np.logspace(np.log10(0.05), np.log10(3), num=20))
 
 
