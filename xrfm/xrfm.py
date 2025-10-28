@@ -16,6 +16,8 @@ from .rfm_src.class_conversion import ClassificationConverter
 from .rfm_src.metrics import Metric
 from .tree_utils import get_param_tree
 
+DEFAULT_TEMP_TUNING_SPACE = tuple([0.0] + list(np.logspace(np.log10(0.025), np.log10(4), num=30)))
+
 
 class xRFM:
     """
@@ -110,7 +112,7 @@ class xRFM:
         If None, predictions use the original hard routing that follows a single leaf.
         Smaller positive values sharpen the routing distribution, approaching hard decisions.
     
-    overlap_fraction : float, default=0.0
+    overlap_fraction : float, default=0.1
         Fraction of the dataset (per side) to include around the split point in both child leaves.
         Each leaf receives an additional overlap of size 2 * overlap_fraction of the original data.
     
@@ -126,7 +128,7 @@ class xRFM:
                  categorical_info=None, default_rfm_params=None,
                  fixed_vector=None, callback=None, classification_mode='zero_one', 
                  time_limit_s=None, n_threads=None, refill_size=1500, random_state=None,
-                 split_temperature=None, overlap_fraction=0.0, **kwargs):
+                 split_temperature=None, overlap_fraction=0.1, **kwargs):
         self._base_min_subset_size = int(min_subset_size)
         self.rfm_params = rfm_params
         self.max_depth = max_depth
@@ -911,6 +913,7 @@ class xRFM:
         self.trees = []
         self._reset_tree_tables()
         start_time = time.time()
+        has_split = False
         for iter in tqdm(range(self.n_trees), desc="Building trees"):
             if iter > 0 and self.time_limit_s is not None and (iter + 1) / iter * (
                     time.time() - start_time) > self.time_limit_s:
@@ -928,11 +931,120 @@ class xRFM:
             if tree['type'] == 'leaf':
                 print("Tree has no split, stopping training")
                 break
+            has_split = True
 
         if self.n_threads is not None:
             torch.set_num_threads(old_n_threads)
 
+        if has_split:
+            self.fit_temperature(X_val, y_val)
+
         return self
+
+
+    def fit_temperature(self, X_val, y_val, temp_tuning_space=DEFAULT_TEMP_TUNING_SPACE):
+        """
+        Tune split_temperature on the validation set using self.tuning_metric.
+
+        Parameters
+        ----------
+        X_val : torch.Tensor
+            Validation features.
+        y_val : torch.Tensor
+            Validation targets (potentially converted for classification).
+        temp_tuning_space : sequence of floats, optional
+            Candidate temperatures to evaluate. A value of 0 corresponds to
+            hard routing (split_temperature=None).
+
+        Returns
+        -------
+        float or None
+            Selected split temperature. None denotes hard routing.
+        """
+        if temp_tuning_space is None:
+            temp_tuning_space = DEFAULT_TEMP_TUNING_SPACE
+
+        if not temp_tuning_space:
+            return self.split_temperature
+
+        if self.trees is None or len(self.trees) == 0:
+            return self.split_temperature
+
+        metric = Metric.from_name(self.tuning_metric)
+        if 'agop' in metric.required_quantities or 'topk' in metric.required_quantities:
+            raise NotImplementedError(
+                f"Temperature tuning does not support metric '{self.tuning_metric}' "
+                "because it requires AGOP statistics."
+            )
+
+        maximizing = metric.should_maximize
+        best_score = float("-inf") if maximizing else float("inf")
+        best_temp_attr = self.split_temperature if self.split_temperature is not None else None
+        best_temp_value = 0.0 if best_temp_attr is None else float(best_temp_attr)
+
+        X_val = X_val.to(self.device)
+        y_val = y_val.to(self.device)
+
+        metric_inputs = {}
+        if 'y_true_reg' in metric.required_quantities:
+            metric_inputs['y_true_reg'] = y_val
+        if 'y_true_class' in metric.required_quantities:
+            if not hasattr(self, 'class_converter_'):
+                raise ValueError("Classification converter is required for classification metrics.")
+            metric_inputs['y_true_class'] = self.class_converter_.numerical_to_labels(y_val)
+        if 'samples' in metric.required_quantities:
+            metric_inputs['samples'] = X_val
+
+        tuning_results = []
+        original_temp = self.split_temperature
+
+        def _aggregate_predictions(use_soft, proba):
+            preds = []
+            for tree in self.trees:
+                if use_soft:
+                    preds.append(self._predict_tree_soft(X_val, tree, proba=proba))
+                else:
+                    preds.append(self._predict_tree_hard(X_val, tree, proba=proba))
+            if len(preds) == 1:
+                return preds[0]
+            return torch.mean(torch.stack(preds, dim=0), dim=0)
+
+        with torch.no_grad():
+            for temp_candidate in temp_tuning_space:
+                temp_candidate = float(temp_candidate)
+                if temp_candidate <= 0.0:
+                    self.split_temperature = None
+                    use_soft = False
+                else:
+                    self.split_temperature = temp_candidate
+                    use_soft = True
+
+                if 'y_pred' in metric.required_quantities:
+                    metric_inputs['y_pred'] = _aggregate_predictions(use_soft=use_soft, proba=False)
+                if 'y_pred_proba' in metric.required_quantities:
+                    metric_inputs['y_pred_proba'] = _aggregate_predictions(use_soft=use_soft, proba=True)
+
+                score = metric.compute(**metric_inputs)
+                tuning_results.append((temp_candidate, score))
+
+                is_better = score > best_score if maximizing else score < best_score
+                if is_better or (temp_candidate == best_temp_value and score == best_score):
+                    best_score = score
+                    best_temp_attr = None if temp_candidate <= 0.0 else temp_candidate
+                    best_temp_value = temp_candidate
+
+        self.split_temperature = best_temp_attr
+        self.best_split_temperature_ = best_temp_value
+        self.best_split_temperature_score_ = best_score
+        self.temperature_tuning_results_ = tuning_results
+
+        if original_temp != self.split_temperature:
+            print(
+                f"Selected split_temperature={self.split_temperature if self.split_temperature is not None else 0.0} "
+                f"based on validation {self.tuning_metric}={best_score:.6f}"
+            )
+
+        return self.split_temperature
 
 
     def score(self, samples, targets):
