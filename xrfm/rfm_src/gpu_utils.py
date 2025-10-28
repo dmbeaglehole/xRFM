@@ -1,5 +1,6 @@
 import math
 import os
+import time
 from functools import wraps
 from typing import Optional, Tuple
 
@@ -86,6 +87,52 @@ def memory_scaling_factor(device=None, *, quadratic=False, base_memory_bytes=BAS
     if quadratic:
         return math.sqrt(memory_ratio)
     return min(memory_ratio, 1) # never use more than 40GB VRAM setting
+
+
+def resolve_device(device=None, *, default_device=None) -> torch.device:
+    """
+    Normalize potential device inputs to a torch.device instance.
+    """
+    if isinstance(device, torch.Tensor):
+        device = device.device
+    if isinstance(device, torch.device):
+        return device
+    if device is None:
+        base = default_device
+        if isinstance(base, torch.Tensor):
+            base = base.device
+        if isinstance(base, torch.device):
+            return base
+        if base is not None:
+            return torch.device(base)
+        return torch.device("cpu")
+    if isinstance(device, str):
+        return torch.device(device)
+    return torch.device(device)
+
+
+def timer_start(device=None, *, default_device=None) -> float:
+    """
+    Synchronize the provided device before starting a timed section.
+    """
+    resolved_device = resolve_device(device, default_device=default_device)
+    if resolved_device.type == "cuda":
+        torch.cuda.synchronize(resolved_device)
+    return time.perf_counter()
+
+
+def timer_end(device, start_time: float, label: str, *, default_device=None, logger=print) -> float:
+    """
+    Synchronize the provided device, log elapsed time, and return the value.
+    """
+    resolved_device = resolve_device(device, default_device=default_device)
+    if resolved_device.type == "cuda":
+        torch.cuda.synchronize(resolved_device)
+    end_time = time.perf_counter()
+    elapsed = end_time - start_time
+    if logger is not None:
+        logger(f"{label}: {elapsed:.6f} seconds")
+    return elapsed
 
 
 def _bytes_to_gb_str(num_bytes: int) -> str:

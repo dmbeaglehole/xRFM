@@ -8,7 +8,9 @@ import torch
 import torch.nn.functional as F
 
 from xrfm.rfm_src import RFM, matrix_power
-from xrfm.rfm_src.gpu_utils import memory_scaling_factor
+from xrfm.rfm_src.gpu_utils import (
+    memory_scaling_factor,
+)
 from tqdm import tqdm
 import copy
 
@@ -16,7 +18,7 @@ from .rfm_src.class_conversion import ClassificationConverter
 from .rfm_src.metrics import Metric
 from .tree_utils import get_param_tree
 
-DEFAULT_TEMP_TUNING_SPACE = tuple([0.0] + list(np.logspace(np.log10(0.025), np.log10(4), num=30)))
+DEFAULT_TEMP_TUNING_SPACE = tuple([0.0] + list(np.logspace(np.log10(0.025), np.log10(3.5), num=30)))
 
 
 class xRFM:
@@ -112,7 +114,7 @@ class xRFM:
         If None, predictions use the original hard routing that follows a single leaf.
         Smaller positive values sharpen the routing distribution, approaching hard decisions.
     
-    overlap_fraction : float, default=0.1
+    overlap_fraction : float
         Fraction of the dataset (per side) to include around the split point in both child leaves.
         Each leaf receives an additional overlap of size 2 * overlap_fraction of the original data.
     
@@ -128,7 +130,7 @@ class xRFM:
                  categorical_info=None, default_rfm_params=None,
                  fixed_vector=None, callback=None, classification_mode='zero_one', 
                  time_limit_s=None, n_threads=None, refill_size=1500, random_state=None,
-                 split_temperature=None, overlap_fraction=0.1, use_temperature_tuning=False, 
+                 split_temperature=None, overlap_fraction=0.05, use_temperature_tuning=True, 
                  **kwargs):
         self._base_min_subset_size = int(min_subset_size)
         self.rfm_params = rfm_params
@@ -1261,6 +1263,7 @@ class xRFM:
             Aggregated predictions for all samples
         """
         cache = self._ensure_tree_cache(tree)
+        
         leaf_models = cache['leaf_models']
         leaf_paths = cache['leaf_paths']
         leaf_order = cache['leaf_order']
@@ -1273,10 +1276,6 @@ class xRFM:
             return sole_leaf.predict_proba(X) if proba else sole_leaf.predict(X)
 
         temperature_constant = self.split_temperature
-        if temperature_constant is None:
-            # Should not happen because dispatcher handles None, but keep safe guard.
-            return self._predict_tree_hard(X, tree, proba=proba)
-
         if temperature_constant <= 0:
             raise ValueError("split_temperature must be positive.")
 
@@ -1287,57 +1286,45 @@ class xRFM:
             split_point = split_thresholds[node_id]
             logits = (X @ direction) - split_point
             node_scale = temp_scalings.get(node_id, 1.0)
-            if isinstance(node_scale, torch.Tensor):
-                node_scale = node_scale.item()
-            if not math.isfinite(node_scale) or node_scale <= 0.0:
-                node_scale = 1.0
             node_temperature = temperature_constant * node_scale
-            if not math.isfinite(node_temperature) or node_temperature <= 0.0:
-                node_temperature = temperature_constant
-            inv_node_temperature = 1.0 / node_temperature
-            node_logits[node_id] = logits * inv_node_temperature
-
+            node_logits[node_id] = logits / node_temperature
+        
         # Aggregate log probabilities for each leaf path
         log_leaf_probs = []
         for leaf_id in leaf_order:
             path = leaf_paths[leaf_id]
-            if not path:
-                log_prob = torch.zeros(X.shape[0], device=X.device)
-            else:
-                log_prob = torch.zeros(X.shape[0], device=X.device)
-                for node_id, took_left in path:
-                    logits = node_logits[node_id]
-                    if took_left:
-                        log_prob = log_prob + F.logsigmoid(-logits)
-                    else:
-                        log_prob = log_prob + F.logsigmoid(logits)
+            log_prob = torch.zeros(X.shape[0], device=X.device)
+            for node_id, took_left in path:
+                logits = node_logits[node_id]
+                if took_left:
+                    log_prob = log_prob + F.logsigmoid(-logits)
+                else:
+                    log_prob = log_prob + F.logsigmoid(logits)
             log_leaf_probs.append(log_prob)
 
         leaf_log_prob_tensor = torch.clamp(torch.stack(log_leaf_probs, dim=1), min=-50.0)  # (n_samples, n_leaves)
         max_log_prob = torch.max(leaf_log_prob_tensor, dim=1, keepdim=True).values
         stable_log_probs = leaf_log_prob_tensor - max_log_prob
         leaf_probs = torch.exp(stable_log_probs)
+        
         normalizer = torch.clamp(
             leaf_probs.sum(dim=1, keepdim=True),
             min=torch.finfo(leaf_probs.dtype).tiny
         )
         weights = leaf_probs / normalizer
-
+        
         leaf_preds = []
         for leaf_id in leaf_order:
             model = leaf_models[leaf_id]
             preds = model.predict_proba(X) if proba else model.predict(X)
-            if not isinstance(preds, torch.Tensor):
-                preds = torch.as_tensor(preds, device=self.device)
-            else:
-                preds = preds.to(self.device)
-            if preds.dim() == 1:
-                preds = preds.unsqueeze(-1)
+            preds = torch.as_tensor(preds, device=weights.device)
+            preds = preds.to(dtype=weights.dtype)
             leaf_preds.append(preds)
-
+            
         preds_tensor = torch.stack(leaf_preds, dim=1)  # (n_samples, n_leaves, n_outputs)
-        weights = weights.unsqueeze(-1)
-        aggregated = torch.sum(weights * preds_tensor, dim=1)
+        leaf_weights = weights.unsqueeze(-1)
+        aggregated = torch.sum(leaf_weights * preds_tensor, dim=1)
+        
         return aggregated
 
 
