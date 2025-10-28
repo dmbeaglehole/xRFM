@@ -996,7 +996,6 @@ class xRFM:
             metric_inputs['samples'] = X_val
 
         tuning_results = []
-        original_temp = self.split_temperature
 
         def _aggregate_predictions(use_soft, proba):
             preds = []
