@@ -1009,29 +1009,28 @@ class xRFM:
                 return preds[0]
             return torch.mean(torch.stack(preds, dim=0), dim=0)
 
-        with torch.no_grad():
-            for temp_candidate in temp_tuning_space:
-                temp_candidate = float(temp_candidate)
-                if temp_candidate <= 0.0:
-                    self.split_temperature = None
-                    use_soft = False
-                else:
-                    self.split_temperature = temp_candidate
-                    use_soft = True
+        for temp_candidate in temp_tuning_space:
+            temp_candidate = float(temp_candidate)
+            if temp_candidate <= 0.0:
+                self.split_temperature = None
+                use_soft = False
+            else:
+                self.split_temperature = temp_candidate
+                use_soft = True
 
-                if 'y_pred' in metric.required_quantities:
-                    metric_inputs['y_pred'] = _aggregate_predictions(use_soft=use_soft, proba=False)
-                if 'y_pred_proba' in metric.required_quantities:
-                    metric_inputs['y_pred_proba'] = _aggregate_predictions(use_soft=use_soft, proba=True)
+            if 'y_pred' in metric.required_quantities:
+                metric_inputs['y_pred'] = _aggregate_predictions(use_soft=use_soft, proba=False)
+            if 'y_pred_proba' in metric.required_quantities:
+                metric_inputs['y_pred_proba'] = _aggregate_predictions(use_soft=use_soft, proba=True)
 
-                score = metric.compute(**metric_inputs)
-                tuning_results.append((temp_candidate, score))
+            score = metric.compute(**metric_inputs)
+            tuning_results.append((temp_candidate, score))
 
-                is_better = score > best_score if maximizing else score < best_score
-                if is_better or (temp_candidate == best_temp_value and score == best_score):
-                    best_score = score
-                    best_temp_attr = None if temp_candidate <= 0.0 else temp_candidate
-                    best_temp_value = temp_candidate
+            is_better = score > best_score if maximizing else score < best_score
+            if is_better or (temp_candidate == best_temp_value and score == best_score):
+                best_score = score
+                best_temp_attr = None if temp_candidate <= 0.0 else temp_candidate
+                best_temp_value = temp_candidate
 
         self.split_temperature = best_temp_attr
         self.best_split_temperature_ = best_temp_value
