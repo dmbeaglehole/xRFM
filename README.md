@@ -135,7 +135,7 @@ train_df, val_df = train_test_split(train_df, test_size=0.2, random_state=0)
 
 # Fit preprocessors on train only
 scaler = StandardScaler()
-ohe = OneHotEncoder(sparse=False, handle_unknown='ignore')
+ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
 
 X_num_train = scaler.fit_transform(train_df[num_cols])
 X_num_val = scaler.transform(val_df[num_cols])
@@ -260,7 +260,7 @@ Base Recursive Feature Machine implementation.
 | `'linear'` | Use linear regression coefficients |
 | `'fixed_vector'` | Use fixed projection vector |
 
-### Tuning Metrics
+### Tuning Metrics (and creating your own custom metrics)
 
 xRFM chooses tuning candidates using the `tuning_metric` string on both tree splits and leaf RFMs. Built-in options are:
 

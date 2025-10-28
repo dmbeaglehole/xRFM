@@ -1,6 +1,6 @@
 # xRFM Algorithm
 
-xRFM (tree-structured Recursive Feature Machine) combines kernel ridge regression with supervised tree partitioning so that each region of the feature space learns its own kernel-adapted representation. The sections below describe every component necessary to implement the method without referencing external documents.
+xRFM (tree-structured Recursive Feature Machine) combines kernel ridge regression with supervised tree partitioning so that each region of the feature space fits its own Leaf RFM model. 
 
 ## Preliminaries
 
@@ -161,12 +161,3 @@ SoftRoutePredict(T, X):
 ```
 
 The softmax is implemented stably by subtracting per-row maxima before exponentiation. Leaf predictions reuse the standard `LeafPredict` routine. Setting `T → 0⁺` sharpens the distribution toward the single most probable leaf, while larger `T` averages over many leaves and improves robustness on ambiguous samples.
-
-## Practical Notes
-
-- **Hyperparameters**: `TreeHyp` typically includes the sample size `N`, maximum leaf size `L_max`, and ridge parameter `λ_split` for the split model. `LeafHyp` covers the number of RFM iterations `τ`, the ridge penalty `λ_leaf`, the normalization constant `ε`, and booleans controlling diagonal AGOP usage and bandwidth adaptation.
-- **Categorical variables**: implementation-specific optimizations pre-process categorical columns so that leaf RFMs can handle them efficiently before kernel evaluation.
-- **Local feature learning**: tree partitioning lets different leaves specialize in disjoint feature subsets (e.g., different coordinates matter depending on the initial split direction), which vanilla kernel-RFM cannot disentangle.
-- **Complexity profile**: training scales as `O(n log n)` due to balanced splitting; inference scales as `O(log n)` plus the cost of a single leaf-level kernel prediction.
-
-Together, these steps define the full xRFM algorithm: construct a supervised median-split tree, train enhanced kernel-RFMs inside leaves, and route test points through the tree to query the appropriate leaf predictor.
