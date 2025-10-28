@@ -10,7 +10,7 @@ from xrfm import xRFM
 
 
 # Dataset configuration
-TOTAL_TRAIN = 50_000
+TOTAL_TRAIN = 20_000
 TOTAL_VAL = 5_000
 TOTAL_TEST = 5_000
 NUM_FEATURES = 128
@@ -18,7 +18,7 @@ LOW_RANK = 5
 NOISE_STD = 0.25
 RANDOM_SEED = 0
 
-MIN_SUBSET_SIZE = 12_500
+MIN_SUBSET_SIZE = 1000
 TEMPERATURES = [None] + list(np.logspace(np.log10(0.01), np.log10(3), num=20))
 
 

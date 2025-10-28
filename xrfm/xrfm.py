@@ -128,7 +128,8 @@ class xRFM:
                  categorical_info=None, default_rfm_params=None,
                  fixed_vector=None, callback=None, classification_mode='zero_one', 
                  time_limit_s=None, n_threads=None, refill_size=1500, random_state=None,
-                 split_temperature=None, overlap_fraction=0.1, **kwargs):
+                 split_temperature=None, overlap_fraction=0.1, use_temperature_tuning=False, 
+                 **kwargs):
         self._base_min_subset_size = int(min_subset_size)
         self.rfm_params = rfm_params
         self.max_depth = max_depth
@@ -151,6 +152,7 @@ class xRFM:
         if not (0.0 <= overlap_fraction <= 0.5):
             raise ValueError("overlap_fraction must be in [0.0, 0.5].")
         self.overlap_fraction = overlap_fraction
+        self.use_temperature_tuning = use_temperature_tuning
 
         # scale the maximum leaf size relative to a 40GB GPU; assume quadratic memory growth
         subset_scale = memory_scaling_factor(self.device, quadratic=True)
@@ -936,7 +938,7 @@ class xRFM:
         if self.n_threads is not None:
             torch.set_num_threads(old_n_threads)
 
-        if has_split:
+        if has_split and self.use_temperature_tuning:
             self.fit_temperature(X_val, y_val)
 
         return self
@@ -1008,7 +1010,7 @@ class xRFM:
                 return preds[0]
             return torch.mean(torch.stack(preds, dim=0), dim=0)
 
-        for temp_candidate in temp_tuning_space:
+        for temp_candidate in tqdm(temp_tuning_space, desc="Tuning split temperature"):
             temp_candidate = float(temp_candidate)
             if temp_candidate <= 0.0:
                 self.split_temperature = None
