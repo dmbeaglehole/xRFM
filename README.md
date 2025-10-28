@@ -220,12 +220,6 @@ y_pred = model.predict(X_test)
 | `xrfm/rfm_src/gpu_utils.py` | GPU memory management utilities |
 | `xrfm/tree_utils.py` | Tree manipulation and parameter extraction utilities |
 
-### Example Files
-
-| File | Description |
-|------|-------------|
-| `examples/test.py` | Simple regression example with synthetic data |
-| `examples/covertype.py` | Forest cover type classification example |
 
 ## API Reference
 
@@ -233,14 +227,6 @@ y_pred = model.predict(X_test)
 
 #### `xRFM`
 Tree-based Recursive Feature Machine for scalable learning.
-
-**Constructor Parameters:**
-- `rfm_params` (dict): Parameters for base RFM models
-- `min_subset_size` (int, default=60000): Minimum subset size for splitting
-- `max_depth` (int, default=None): Maximum tree depth
-- `device` (str, default=None): Computing device ('cpu' or 'cuda')
-- `tuning_metric` (str, default='mse'): Metric for model tuning
-- `split_method` (str): Data splitting strategy
 
 **Key Methods:**
 - `fit(X, y, X_val, y_val)`: Train the model
@@ -250,13 +236,6 @@ Tree-based Recursive Feature Machine for scalable learning.
 
 #### `RFM`
 Base Recursive Feature Machine implementation.
-
-**Constructor Parameters:**
-- `kernel` (str or Kernel): Kernel type or kernel object
-- `iters` (int, default=5): Number of training iterations
-- `bandwidth` (float, default=10.0): Kernel bandwidth
-- `device` (str, default=None): Computing device
-- `tuning_metric` (str, default='mse'): Evaluation metric
 
 ### Available Kernels
 
@@ -283,9 +262,16 @@ Base Recursive Feature Machine implementation.
 
 ### Tuning Metrics
 
-| Metric | Description | Task Type |
-|--------|-------------|-----------|
-| `'mse'` | Mean Squared Error | Regression |
-| `'accuracy'` | Classification Accuracy | Classification |
-| `'auc'` | Area Under ROC Curve | Classification |
-| `'f1'` | F1 Score | Classification |
+xRFM chooses tuning candidates using the `tuning_metric` string on both tree splits and leaf RFMs. Built-in options are:
+
+- `mse`, `mae` for regression error
+- `accuracy`, `brier`, `logloss`, `f1`, `auc` for classification quality
+- `top_agop_vector_auc`, `top_agop_vector_pearson_r`, `top_agop_vectors_ols_auc` for AGOP-aware diagnostics
+
+To register a custom metric:
+
+1. Create a new subclass of `Metric` in `xrfm/rfm_src/metrics.py`, fill in the metadata (`name`, `display_name`, `should_maximize`, `task_types`, `required_quantities`), and implement `_compute(**kwargs)` for the quantities you request.
+2. Add the class to the `all_metrics` list inside `Metric.from_name` so the factory can return it by name.
+3. Reference the new `name` in the `tuning_metric` argument when constructing `xRFM` or the standalone `RFM`.
+
+Each metric receives tensors on the active device; convert to NumPy as needed. Return higher-is-better values when `should_maximize = True`, otherwise lower-is-better.

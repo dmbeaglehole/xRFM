@@ -136,6 +136,32 @@ xRFM-predict(T, x):
 
 Prediction requires `O(log n)` comparisons to find the leaf plus one kernel evaluation against the support points stored in that leaf.
 
+### Soft Routing (Optional)
+
+When a global split temperature `T > 0` is provided, xRFM replaces hard routing with a softened mixture over every leaf in the tree. Each internal node stores a splitting vector `v_j`, threshold `b_j`, and optional temperature scaling factor `σ_j`. For an input matrix `X`, let `ℒ` be the leaves in deterministic order and `Path(ℓ)` the ordered list of internal nodes visited on the way to leaf `ℓ`, paired with a boolean indicating whether the left branch was taken.
+
+```
+SoftRoutePredict(T, X):
+    for each internal node j:
+        logits_j ← (X v_j) - b_j
+        τ_j ← T · σ_j                  # σ_j defaults to 1
+        z_j ← logits_j / τ_j
+    for each leaf ℓ ∈ ℒ:
+        log_p_ℓ ← 0
+        for (j, went_left) in Path(ℓ):
+            if went_left:
+                log_p_ℓ ← log_p_ℓ + log σ(-z_j)
+            else:
+                log_p_ℓ ← log_p_ℓ + log σ(z_j)
+    log_p ← stack(log_p_ℓ over ℓ)      # shape (n_samples, |ℒ|)
+    w ← softmax(log_p, dim=1)          # normalized mixture weights
+    for each leaf ℓ:
+        ŷ_ℓ ← LeafPredict(ℓ, X)        # regression or probability vector
+    return Σ_{ℓ} w[:, ℓ] ⊙ ŷ_ℓ
+```
+
+The softmax is implemented stably by subtracting per-row maxima before exponentiation. Leaf predictions reuse the standard `LeafPredict` routine. Setting `T → 0⁺` sharpens the distribution toward the single most probable leaf, while larger `T` averages over many leaves and improves robustness on ambiguous samples.
+
 ## Practical Notes
 
 - **Hyperparameters**: `TreeHyp` typically includes the sample size `N`, maximum leaf size `L_max`, and ridge parameter `λ_split` for the split model. `LeafHyp` covers the number of RFM iterations `τ`, the ridge penalty `λ_leaf`, the normalization constant `ε`, and booleans controlling diagonal AGOP usage and bandwidth adaptation.
