@@ -1030,18 +1030,15 @@ class xRFM:
             if is_better or (temp_candidate == best_temp_value and score == best_score):
                 best_score = score
                 best_temp_attr = None if temp_candidate <= 0.0 else temp_candidate
-                best_temp_value = temp_candidate
 
         self.split_temperature = best_temp_attr
-        self.best_split_temperature_ = best_temp_value
         self.best_split_temperature_score_ = best_score
         self.temperature_tuning_results_ = tuning_results
 
-        if original_temp != self.split_temperature:
-            print(
-                f"Selected split_temperature={self.split_temperature if self.split_temperature is not None else 0.0} "
-                f"based on validation {self.tuning_metric}={best_score:.6f}"
-            )
+        print(
+            f"Selected split_temperature={self.split_temperature if self.split_temperature is not None else 0.0} "
+            f"based on validation {self.tuning_metric}={best_score:.6f}"
+        )
 
         return self.split_temperature
 
