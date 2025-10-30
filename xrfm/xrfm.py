@@ -1,7 +1,7 @@
 import sys
 import time
-import math
 import random
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -18,8 +18,7 @@ from .rfm_src.class_conversion import ClassificationConverter
 from .rfm_src.metrics import Metric
 from .tree_utils import get_param_tree
 
-DEFAULT_TEMP_TUNING_SPACE = tuple([0.0] + list(np.logspace(np.log10(0.025), np.log10(3.5), num=30)))
-
+DEFAULT_TEMP_TUNING_SPACE = [0.0] + list(np.logspace(np.log10(0.025), np.log10(4.5), num=35))
 
 class xRFM:
     """
@@ -118,12 +117,12 @@ class xRFM:
         Fraction of the dataset (per side) to include around the split point in both child leaves.
         Each leaf receives an additional overlap of size 2 * overlap_fraction of the original data.
 
-    keep_weight_frac_in_predict : float, default=0.99
+    keep_weight_frac_in_predict : float
         Fraction of cumulative leaf weight mass to retain per sample during soft prediction.
         The top-weighted leaves covering this fraction are evaluated and their weights
         are renormalized before aggregation.
 
-    max_leaf_count_in_ensemble : int, default=16
+    max_leaf_count_in_ensemble : int
         Maximum number of leaves evaluated per sample during soft prediction.
         Acts as a hard cap after enforcing keep_weight_frac_in_predict.
     
@@ -140,7 +139,9 @@ class xRFM:
                  fixed_vector=None, callback=None, classification_mode='zero_one', 
                  time_limit_s=None, n_threads=None, refill_size=1500, random_state=None,
                  split_temperature=None, overlap_fraction=0.1, use_temperature_tuning=True,
-                 keep_weight_frac_in_predict=0.99, max_leaf_count_in_ensemble=16, **kwargs):
+                 keep_weight_frac_in_predict=0.99, max_leaf_count_in_ensemble=12, 
+                 temp_tuning_space: Optional[List[float]]= None,
+                 **kwargs):
         self._base_min_subset_size = int(min_subset_size)
         self.rfm_params = rfm_params
         self.max_depth = max_depth
@@ -184,6 +185,10 @@ class xRFM:
         if split_temperature is not None and split_temperature < 0:
             raise ValueError("split_temperature must be positive when specified.")
         self.split_temperature = split_temperature
+
+        if temp_tuning_space is None:
+            temp_tuning_space = DEFAULT_TEMP_TUNING_SPACE
+        self.temp_tuning_space = temp_tuning_space
 
         # parameters for refilling the validation set at leaves
         self.min_val_size = refill_size
@@ -904,12 +909,12 @@ class xRFM:
             torch.set_num_threads(old_n_threads)
 
         if has_split and self.use_temperature_tuning:
-            self.fit_temperature(X_val, y_val)
+            self.fit_temperature(X_val, y_val, self.temp_tuning_space)
 
         return self
 
 
-    def fit_temperature(self, X_val, y_val, temp_tuning_space=DEFAULT_TEMP_TUNING_SPACE):
+    def fit_temperature(self, X_val, y_val, temp_tuning_space):
         """
         Tune split_temperature on the validation set using self.tuning_metric.
 
@@ -928,12 +933,6 @@ class xRFM:
         float or None
             Selected split temperature. None denotes hard routing.
         """
-        if temp_tuning_space is None:
-            temp_tuning_space = DEFAULT_TEMP_TUNING_SPACE
-
-        if not temp_tuning_space:
-            return self.split_temperature
-
         if self.trees is None or len(self.trees) == 0:
             return self.split_temperature
 

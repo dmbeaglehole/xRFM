@@ -24,7 +24,7 @@ DEFAULT_DATA_ID = 45072  # Bank Marketing dataset; override via --data-id
 DEFAULT_TOTAL_TRAIN = 100_000
 DEFAULT_TOTAL_VAL = 20_000
 DEFAULT_TOTAL_TEST = 20_000
-DEFAULT_MIN_SUBSET_SIZE = 20_000
+DEFAULT_MIN_SUBSET_SIZE = 50_000
 TEMPERATURES = [None] + list(np.logspace(np.log10(0.05), np.log10(3), num=20))
 
 
