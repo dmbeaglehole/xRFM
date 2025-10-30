@@ -184,13 +184,6 @@ class xRFM:
         if split_temperature is not None and split_temperature < 0:
             raise ValueError("split_temperature must be positive when specified.")
         self.split_temperature = split_temperature
-        self._leaf_model_tables = []
-        self._split_direction_tables = []
-        self._split_threshold_tables = []
-        self._split_temp_scaling_tables = []
-        self._leaf_path_tables = []
-        self._leaf_order_tables = []
-        self._tree_caches = []
 
         # parameters for refilling the validation set at leaves
         self.min_val_size = refill_size
@@ -338,18 +331,6 @@ class xRFM:
             best_agops += [getattr(node['model'], attr_name) for node in leaf_nodes]
         return best_agops
 
-    def _reset_tree_tables(self):
-        """
-        Reset cached lookup tables for fast tree traversal and prediction.
-        """
-        self._leaf_model_tables = []
-        self._split_direction_tables = []
-        self._split_threshold_tables = []
-        self._split_temp_scaling_tables = []
-        self._leaf_path_tables = []
-        self._leaf_order_tables = []
-        self._tree_caches = []
-
     def _build_tree_cache(self, tree):
         """
         Construct lookup tables for a tree to support soft routing.
@@ -423,33 +404,6 @@ class xRFM:
         cache = tree.get('_cache')
         if cache is None:
             cache = self._build_tree_cache(tree)
-        elif 'split_temp_scalings' not in cache:
-            split_temp_scalings = {node_id: 1.0 for node_id in cache.get('split_directions', {}).keys()}
-            cache['split_temp_scalings'] = split_temp_scalings
-        return cache
-
-    def _register_tree_cache(self, tree):
-        """
-        Register a tree's lookup tables with the model-level caches.
-
-        Parameters
-        ----------
-        tree : dict
-            Root node of the tree.
-
-        Returns
-        -------
-        dict
-            Lookup cache for the tree.
-        """
-        cache = self._ensure_tree_cache(tree)
-        self._leaf_model_tables.append(cache['leaf_models'])
-        self._split_direction_tables.append(cache['split_directions'])
-        self._split_threshold_tables.append(cache['split_thresholds'])
-        self._split_temp_scaling_tables.append(cache['split_temp_scalings'])
-        self._leaf_path_tables.append(cache['leaf_paths'])
-        self._leaf_order_tables.append(cache['leaf_order'])
-        self._tree_caches.append(cache)
         return cache
 
     def collect_best_agops(self):
@@ -925,7 +879,6 @@ class xRFM:
 
         # Build multiple trees
         self.trees = []
-        self._reset_tree_tables()
         start_time = time.time()
         has_split = False
         for iter in tqdm(range(self.n_trees), desc="Building trees"):
@@ -940,7 +893,7 @@ class xRFM:
             else:
                 tree = self._build_tree(X, y, X_val, y_val, is_root=True, time_limit_s=time_limit_s, **kwargs)
             self.trees.append(tree)
-            self._register_tree_cache(tree)
+            self._ensure_tree_cache(tree)
 
             if tree['type'] == 'leaf':
                 print("Tree has no split, stopping training")
@@ -1325,12 +1278,9 @@ class xRFM:
 
         sorted_weights, sorted_indices = torch.sort(weights, dim=1, descending=True)
         n_leaves = weights.shape[1]
-        if self.keep_weight_frac_in_predict < 1.0:
-            cumulative = torch.cumsum(sorted_weights, dim=1)
-            keep_counts = torch.sum(cumulative < self.keep_weight_frac_in_predict, dim=1)
-        else:
-            keep_counts = torch.full((weights.shape[0],), n_leaves - 1, device=weights.device, dtype=torch.long)
 
+        cumulative = torch.cumsum(sorted_weights, dim=1)
+        keep_counts = torch.sum(cumulative < self.keep_weight_frac_in_predict, dim=1)
 
         max_allowed = min(self.max_leaf_count_in_ensemble, n_leaves) - 1
         max_allowed = max(max_allowed, 0)
@@ -1450,11 +1400,10 @@ class xRFM:
                 tree.setdefault('adaptive_temp_scaling', 1.0)
                 return tree
 
-        self._reset_tree_tables()
         for param_tree in param_trees:
             tree = set_leaf_model_single_tree(param_tree)
             self.trees.append(tree)
-            self._register_tree_cache(tree)
+            self._ensure_tree_cache(tree)
 
         return
 
