@@ -56,7 +56,7 @@ class xRFM:
         Method to use for splitting the data.
         'top_vector_agop_on_subset' : use the top eigenvector of the AGOP on the subset
         'random_agop_on_subset' : use a random eigenvector of the AGOP on the subset
-        'top_pc_agop_on_subset' : use the top principal component of the AGOP on the subset
+        'top_pc_agop_on_subset' : use the top principal component of data transformed with the AGOP
         'random_pca' : use a random principal component of the data
         'linear' : use linear regression coefficients as projection direction
         'fixed_vector' : use a fixed vector for projection (requires fixed_vector parameter)
