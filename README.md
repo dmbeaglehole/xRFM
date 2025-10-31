@@ -25,7 +25,7 @@ xRFM/
 
 ### With GPU
 
-If a GPU is available, it is highly recommended to perform the is to use either the 'cu11' or 'cu12' requirement. These versions offer significantly) accelerated Product and Lpq Laplace Kernels. With CUDA-11 use:
+If a GPU is available, it is highly recommended to use either the 'cu11' or 'cu12' extra requirement. These versions offer significantly accelerated Product and Lpq Laplace Kernels. With CUDA-11 use:
 
 ```bash
 pip install xrfm[cu11]
