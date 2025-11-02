@@ -54,7 +54,7 @@ def _make_manual_model(split_temperature=None):
     model.n_classes_ = 0
     tree = _make_manual_tree(model)
     model.trees = [tree]
-    model._register_tree_cache(tree)
+    model._ensure_tree_cache(tree)
     return model, tree
 
 

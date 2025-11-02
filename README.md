@@ -21,22 +21,26 @@ xRFM/
 └── setup.py                # Package configuration
 ```
 
-## Installation
+## Installation 
 
-```bash
-pip install xrfm
-```
+### With GPU
 
-Or to use the KermacProductLaplaceKernel, with CUDA-11 or CUDA-12:
+If a GPU is available, it is highly recommended to use either the 'cu11' or 'cu12' extra requirement. These versions offer significantly accelerated Product and Lpq Laplace Kernels. With CUDA-11 use:
 
 ```bash
 pip install xrfm[cu11]
 ```
 
-or 
+or, with CUDA-12:
 
 ```bash
 pip install xrfm[cu12]
+```
+
+### General Installation
+
+```bash
+pip install xrfm
 ```
 
 ### Development Installation
@@ -255,7 +259,7 @@ Base Recursive Feature Machine implementation.
 |--------|-------------|
 | `'top_vector_agop_on_subset'` | Use top eigenvector of AGOP matrix |
 | `'random_agop_on_subset'` | Use random eigenvector of AGOP matrix |
-| `'top_pc_agop_on_subset'` | Use top principal component of AGOP |
+| `'top_pc_agop_on_subset'` | Use top principal component of data transformed with the AGOP |
 | `'random_pca'` | Use vector sampled from Gaussian distribution with covariance $X^\top X$|
 | `'linear'` | Use linear regression coefficients |
 | `'fixed_vector'` | Use fixed projection vector |

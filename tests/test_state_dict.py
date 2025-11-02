@@ -33,9 +33,8 @@ def _build_manual_model(device, adaptive_temp_scaling, left_params, right_params
         'adaptive_temp_scaling': adaptive_temp_scaling,
     }
 
-    model._reset_tree_tables()
     model.trees = [tree]
-    model._register_tree_cache(tree)
+    model._ensure_tree_cache(tree)
     return model
 
 
@@ -98,7 +97,8 @@ def test_load_state_dict_restores_tree_parameters(manual_model_setup):
 
     loaded_tree = new_model.trees[0]
     assert loaded_tree['adaptive_temp_scaling'] == pytest.approx(adaptive_temp_scaling)
-    temp_scalings = new_model._split_temp_scaling_tables[0]
+    cache = new_model._ensure_tree_cache(loaded_tree)
+    temp_scalings = cache['split_temp_scalings']
     assert temp_scalings[0] == pytest.approx(adaptive_temp_scaling)
 
     left_model = loaded_tree['left']['model']

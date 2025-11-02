@@ -1,7 +1,7 @@
 import sys
 import time
-import math
 import random
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -18,8 +18,7 @@ from .rfm_src.class_conversion import ClassificationConverter
 from .rfm_src.metrics import Metric
 from .tree_utils import get_param_tree
 
-DEFAULT_TEMP_TUNING_SPACE = tuple([0.0] + list(np.logspace(np.log10(0.025), np.log10(3.5), num=30)))
-
+DEFAULT_TEMP_TUNING_SPACE = [0.0] + list(np.logspace(np.log10(0.025), np.log10(4.5), num=35))
 
 class xRFM:
     """
@@ -57,7 +56,7 @@ class xRFM:
         Method to use for splitting the data.
         'top_vector_agop_on_subset' : use the top eigenvector of the AGOP on the subset
         'random_agop_on_subset' : use a random eigenvector of the AGOP on the subset
-        'top_pc_agop_on_subset' : use the top principal component of the AGOP on the subset
+        'top_pc_agop_on_subset' : use the top principal component of data transformed with the AGOP
         'random_pca' : use a random principal component of the data
         'linear' : use linear regression coefficients as projection direction
         'fixed_vector' : use a fixed vector for projection (requires fixed_vector parameter)
@@ -117,6 +116,15 @@ class xRFM:
     overlap_fraction : float
         Fraction of the dataset (per side) to include around the split point in both child leaves.
         Each leaf receives an additional overlap of size 2 * overlap_fraction of the original data.
+
+    keep_weight_frac_in_predict : float
+        Fraction of cumulative leaf weight mass to retain per sample during soft prediction.
+        The top-weighted leaves covering this fraction are evaluated and their weights
+        are renormalized before aggregation.
+
+    max_leaf_count_in_ensemble : int
+        Maximum number of leaves evaluated per sample during soft prediction.
+        Acts as a hard cap after enforcing keep_weight_frac_in_predict.
     
     Notes
     -----
@@ -130,7 +138,9 @@ class xRFM:
                  categorical_info=None, default_rfm_params=None,
                  fixed_vector=None, callback=None, classification_mode='zero_one', 
                  time_limit_s=None, n_threads=None, refill_size=1500, random_state=None,
-                 split_temperature=None, overlap_fraction=0.05, use_temperature_tuning=True, 
+                 split_temperature=None, overlap_fraction=0.1, use_temperature_tuning=True,
+                 keep_weight_frac_in_predict=0.99, max_leaf_count_in_ensemble=12, 
+                 temp_tuning_space: Optional[List[float]]= None,
                  **kwargs):
         self._base_min_subset_size = int(min_subset_size)
         self.rfm_params = rfm_params
@@ -155,6 +165,12 @@ class xRFM:
             raise ValueError("overlap_fraction must be in [0.0, 0.5].")
         self.overlap_fraction = overlap_fraction
         self.use_temperature_tuning = use_temperature_tuning
+        if not (0.0 <= keep_weight_frac_in_predict <= 1.0):
+            raise ValueError("keep_weight_frac_in_predict must lie in [0.0, 1.0].")
+        self.keep_weight_frac_in_predict = keep_weight_frac_in_predict
+        if max_leaf_count_in_ensemble < 1:
+            raise ValueError("max_leaf_count_in_ensemble must be at least 1.")
+        self.max_leaf_count_in_ensemble = int(max_leaf_count_in_ensemble)
 
         # scale the maximum leaf size relative to a 40GB GPU; assume quadratic memory growth
         subset_scale = memory_scaling_factor(self.device, quadratic=True)
@@ -169,13 +185,10 @@ class xRFM:
         if split_temperature is not None and split_temperature < 0:
             raise ValueError("split_temperature must be positive when specified.")
         self.split_temperature = split_temperature
-        self._leaf_model_tables = []
-        self._split_direction_tables = []
-        self._split_threshold_tables = []
-        self._split_temp_scaling_tables = []
-        self._leaf_path_tables = []
-        self._leaf_order_tables = []
-        self._tree_caches = []
+
+        if temp_tuning_space is None:
+            temp_tuning_space = DEFAULT_TEMP_TUNING_SPACE
+        self.temp_tuning_space = temp_tuning_space
 
         # parameters for refilling the validation set at leaves
         self.min_val_size = refill_size
@@ -323,18 +336,6 @@ class xRFM:
             best_agops += [getattr(node['model'], attr_name) for node in leaf_nodes]
         return best_agops
 
-    def _reset_tree_tables(self):
-        """
-        Reset cached lookup tables for fast tree traversal and prediction.
-        """
-        self._leaf_model_tables = []
-        self._split_direction_tables = []
-        self._split_threshold_tables = []
-        self._split_temp_scaling_tables = []
-        self._leaf_path_tables = []
-        self._leaf_order_tables = []
-        self._tree_caches = []
-
     def _build_tree_cache(self, tree):
         """
         Construct lookup tables for a tree to support soft routing.
@@ -408,33 +409,6 @@ class xRFM:
         cache = tree.get('_cache')
         if cache is None:
             cache = self._build_tree_cache(tree)
-        elif 'split_temp_scalings' not in cache:
-            split_temp_scalings = {node_id: 1.0 for node_id in cache.get('split_directions', {}).keys()}
-            cache['split_temp_scalings'] = split_temp_scalings
-        return cache
-
-    def _register_tree_cache(self, tree):
-        """
-        Register a tree's lookup tables with the model-level caches.
-
-        Parameters
-        ----------
-        tree : dict
-            Root node of the tree.
-
-        Returns
-        -------
-        dict
-            Lookup cache for the tree.
-        """
-        cache = self._ensure_tree_cache(tree)
-        self._leaf_model_tables.append(cache['leaf_models'])
-        self._split_direction_tables.append(cache['split_directions'])
-        self._split_threshold_tables.append(cache['split_thresholds'])
-        self._split_temp_scaling_tables.append(cache['split_temp_scalings'])
-        self._leaf_path_tables.append(cache['leaf_paths'])
-        self._leaf_order_tables.append(cache['leaf_order'])
-        self._tree_caches.append(cache)
         return cache
 
     def collect_best_agops(self):
@@ -670,8 +644,6 @@ class xRFM:
         q3 = torch.quantile(projections, 0.75)
         iqr = (q3 - q1).clamp_min(1e-6)
         adaptive_temp_scaling = float(iqr.item())
-        if not math.isfinite(adaptive_temp_scaling) or adaptive_temp_scaling <= 0.0:
-            adaptive_temp_scaling = 1.0
 
         # Get balanced split for training set to avoid infinite recursion with repeated data
         left_mask, right_mask = self._get_balanced_split(projections, train_median)
@@ -923,7 +895,6 @@ class xRFM:
 
         # Build multiple trees
         self.trees = []
-        self._reset_tree_tables()
         start_time = time.time()
         has_split = False
         for iter in tqdm(range(self.n_trees), desc="Building trees"):
@@ -939,7 +910,7 @@ class xRFM:
                 tree = self._build_tree(X, y, X_val, y_val, is_root=True, time_limit_s=time_limit_s,
                                         split_tracker={'count': 0}, **kwargs)
             self.trees.append(tree)
-            self._register_tree_cache(tree)
+            self._ensure_tree_cache(tree)
 
             if tree['type'] == 'leaf':
                 print("Tree has no split, stopping training")
@@ -950,12 +921,12 @@ class xRFM:
             torch.set_num_threads(old_n_threads)
 
         if has_split and self.use_temperature_tuning:
-            self.fit_temperature(X_val, y_val)
+            self.fit_temperature(X_val, y_val, self.temp_tuning_space)
 
         return self
 
 
-    def fit_temperature(self, X_val, y_val, temp_tuning_space=DEFAULT_TEMP_TUNING_SPACE):
+    def fit_temperature(self, X_val, y_val, temp_tuning_space):
         """
         Tune split_temperature on the validation set using self.tuning_metric.
 
@@ -974,12 +945,6 @@ class xRFM:
         float or None
             Selected split temperature. None denotes hard routing.
         """
-        if temp_tuning_space is None:
-            temp_tuning_space = DEFAULT_TEMP_TUNING_SPACE
-
-        if not temp_tuning_space:
-            return self.split_temperature
-
         if self.trees is None or len(self.trees) == 0:
             return self.split_temperature
 
@@ -1321,19 +1286,51 @@ class xRFM:
             min=torch.finfo(leaf_probs.dtype).tiny
         )
         weights = leaf_probs / normalizer
-        
-        leaf_preds = []
-        for leaf_id in leaf_order:
+
+        sorted_weights, sorted_indices = torch.sort(weights, dim=1, descending=True)
+        n_leaves = weights.shape[1]
+
+        cumulative = torch.cumsum(sorted_weights, dim=1)
+        keep_counts = torch.sum(cumulative < self.keep_weight_frac_in_predict, dim=1)
+
+        max_allowed = min(self.max_leaf_count_in_ensemble, n_leaves) - 1
+        max_allowed = max(max_allowed, 0)
+        keep_counts = torch.clamp(keep_counts, max=max_allowed)
+        position_range = torch.arange(n_leaves, device=weights.device).view(1, -1).expand_as(weights)
+        keep_mask_sorted = position_range <= keep_counts.unsqueeze(1)
+        active_mask = torch.zeros_like(weights, dtype=torch.bool)
+        active_mask.scatter_(1, sorted_indices, keep_mask_sorted)
+
+        weights = torch.where(active_mask, weights, torch.zeros_like(weights))
+        renorm = torch.clamp(weights.sum(dim=1, keepdim=True), min=torch.finfo(weights.dtype).tiny)
+        weights = weights / renorm
+
+        aggregated = None
+        expected_dim = None
+        n_samples = X.shape[0]
+
+        for leaf_idx, leaf_id in enumerate(leaf_order):
+            sample_indices = torch.nonzero(active_mask[:, leaf_idx], as_tuple=False).squeeze(1)
+            if sample_indices.numel() == 0:
+                continue
+
             model = leaf_models[leaf_id]
-            preds = model.predict_proba(X) if proba else model.predict(X)
+            X_subset = X[sample_indices]
+            preds = model.predict_proba(X_subset) if proba else model.predict(X_subset)
             preds = torch.as_tensor(preds, device=weights.device)
+            if preds.dim() == 1:
+                preds = preds.unsqueeze(-1)
             preds = preds.to(dtype=weights.dtype)
-            leaf_preds.append(preds)
-            
-        preds_tensor = torch.stack(leaf_preds, dim=1)  # (n_samples, n_leaves, n_outputs)
-        leaf_weights = weights.unsqueeze(-1)
-        aggregated = torch.sum(leaf_weights * preds_tensor, dim=1)
-        
+
+            if aggregated is None:
+                expected_dim = preds.shape[1]
+                aggregated = torch.zeros((n_samples, expected_dim), device=weights.device, dtype=preds.dtype)
+            elif preds.shape[1] != expected_dim:
+                raise ValueError("Leaf predictions have inconsistent output dimensions.")
+
+            leaf_weights = weights[sample_indices, leaf_idx].unsqueeze(-1)
+            aggregated[sample_indices] += leaf_weights * preds
+
         return aggregated
 
 
@@ -1414,11 +1411,10 @@ class xRFM:
                 tree.setdefault('adaptive_temp_scaling', 1.0)
                 return tree
 
-        self._reset_tree_tables()
         for param_tree in param_trees:
             tree = set_leaf_model_single_tree(param_tree)
             self.trees.append(tree)
-            self._register_tree_cache(tree)
+            self._ensure_tree_cache(tree)
 
         return
 
