@@ -38,9 +38,9 @@ class xRFM:
         The minimum size of a subset to further split. If a subset has fewer 
         samples than this, a base RFM model is fit on it directly.
     
-    max_depth : int, default=None
-        Maximum depth of the recursive splitting tree. If None, splitting continues
-        until all subsets are smaller than min_subset_size.
+    number_of_splits : int, optional
+        Minimum number of splits to perform while building each tree. If None,
+        splitting is only constrained by the subset size.
     
     device : str, default=None
         Device to use for computation. If None, uses cuda if available, otherwise cpu.
@@ -125,7 +125,7 @@ class xRFM:
     """
 
     def __init__(self, rfm_params=None, min_subset_size=60_000,
-                 max_depth=None, device=None, n_trees=1, n_tree_iters=0,
+                 number_of_splits=None, device=None, n_trees=1, n_tree_iters=0,
                  split_method='top_vector_agop_on_subset', tuning_metric=None,
                  categorical_info=None, default_rfm_params=None,
                  fixed_vector=None, callback=None, classification_mode='zero_one', 
@@ -134,7 +134,6 @@ class xRFM:
                  **kwargs):
         self._base_min_subset_size = int(min_subset_size)
         self.rfm_params = rfm_params
-        self.max_depth = max_depth
         self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.trees = None
         self.projections = None
@@ -143,6 +142,7 @@ class xRFM:
         self.n_tree_iters = n_tree_iters
         self.tuning_metric = tuning_metric
         self.split_method = split_method
+        self.number_of_splits = number_of_splits
         self.maximizing_metric = False if tuning_metric is None else Metric.from_name(tuning_metric).should_maximize
         self.categorical_info = categorical_info
         self.fixed_vector = fixed_vector
@@ -562,8 +562,8 @@ class xRFM:
         assert left_mask.sum() - right_mask.sum() <= 1, "Left and right masks should have the same number of elements"
         return left_mask, right_mask
 
-    def _build_tree(self, X, y, X_val, y_val, train_indices=None, depth=0, avg_M=None, is_root=False,
-                    time_limit_s=None, **kwargs):
+    def _build_tree(self, X, y, X_val, y_val, train_indices=None, avg_M=None, is_root=False,
+                    time_limit_s=None, split_tracker=None, **kwargs):
         """
         Recursively build the tree by splitting data based on random projections.
         
@@ -577,14 +577,14 @@ class xRFM:
             Validation features
         y_val : torch.Tensor
             Validation target values
-        depth : int
-            Current depth in the tree
         avg_M : torch.Tensor, optional
             Averaged M matrix to use for generating projections
         is_final_iter : bool, default=False
             Whether this is the final iteration of tree building
         time_limit_s : float, optional
             Time limit in seconds.
+        split_tracker : dict, optional
+            Mutable counter tracking the number of splits performed for the current tree.
             
         Returns
         -------
@@ -595,9 +595,16 @@ class xRFM:
         n_samples = X.shape[0]
         if train_indices is None:
             train_indices = torch.arange(n_samples, device=self.device)
+        if split_tracker is None:
+            split_tracker = {'count': 0}
 
         # Check terminal conditions
-        if (n_samples <= self.min_subset_size) or (self.max_depth is not None and depth >= self.max_depth):
+        should_create_leaf = False
+        if n_samples <= self.min_subset_size:
+            if self.number_of_splits is None or split_tracker['count'] >= self.number_of_splits:
+                should_create_leaf = True
+
+        if should_create_leaf:
             if not is_root:  # refill the validation set if you've split the data before
                 print("Refilling validation set, because at least one split has been made.")
                 X, y, X_val, y_val, train_indices = self._refill_val_set(X, y, X_val, y_val, train_indices)
@@ -609,6 +616,8 @@ class xRFM:
 
             model.fit((X, y), (X_val, y_val), **self.rfm_params['fit'], callback=self.callback, **kwargs)
             return {'type': 'leaf', 'model': model, 'train_indices': train_indices, 'is_root': is_root}
+
+        split_tracker['count'] += 1
 
         # Generate projection vector
         if avg_M is not None and self.split_method == 'random_global_agop':
@@ -657,14 +666,11 @@ class xRFM:
         train_median = torch.median(projections)
 
         # Compute inter-quartile range to scale the gating temperature adaptively
-        try:
-            q1 = torch.quantile(projections, 0.25)
-            q3 = torch.quantile(projections, 0.75)
-            iqr = (q3 - q1).clamp_min(1e-6)
-            adaptive_temp_scaling = float(iqr.item())
-            if not math.isfinite(adaptive_temp_scaling) or adaptive_temp_scaling <= 0.0:
-                adaptive_temp_scaling = 1.0
-        except RuntimeError:
+        q1 = torch.quantile(projections, 0.25)
+        q3 = torch.quantile(projections, 0.75)
+        iqr = (q3 - q1).clamp_min(1e-6)
+        adaptive_temp_scaling = float(iqr.item())
+        if not math.isfinite(adaptive_temp_scaling) or adaptive_temp_scaling <= 0.0:
             adaptive_temp_scaling = 1.0
 
         # Get balanced split for training set to avoid infinite recursion with repeated data
@@ -684,17 +690,17 @@ class xRFM:
         # Build subtrees
         left_tree = self._build_tree(X_left, y_left, X_val_left, y_val_left,
                                      train_indices=train_indices[left_mask],
-                                     depth=depth + 1,
                                      avg_M=avg_M,
                                      is_root=False,
+                                     split_tracker=split_tracker,
                                      time_limit_s=None if time_limit_s is None
                                      else 0.5 * (time_limit_s - (time.time() - start_time)),
                                      **kwargs)
         right_tree = self._build_tree(X_right, y_right, X_val_right, y_val_right,
                                       train_indices=train_indices[right_mask],
-                                      depth=depth + 1,
                                       avg_M=avg_M,
                                       is_root=False,
+                                      split_tracker=split_tracker,
                                       time_limit_s=None if time_limit_s is None
                                       else time_limit_s - (time.time() - start_time),
                                       **kwargs
@@ -788,7 +794,8 @@ class xRFM:
 
         # First iteration: use random projections
         tree = self._build_tree(X, y, X_val, y_val, avg_M=None, is_root=True,
-                                time_limit_s=None if time_limit_s is None else time_limit_s / (1 + self.n_tree_iters))
+                                time_limit_s=None if time_limit_s is None else time_limit_s / (1 + self.n_tree_iters),
+                                split_tracker={'count': 0})
 
         # Evaluate the first tree on validation data
         best_val_score = self.score_tree(X_val, y_val, tree)
@@ -809,6 +816,7 @@ class xRFM:
             tree = self._build_tree(X, y, X_val, y_val, avg_M=avg_M, is_root=False,
                                     time_limit_s=None if time_limit_s is None
                                     else (time_limit_s - (time.time() - start_time)) / (self.n_tree_iters - iter),
+                                    split_tracker={'count': 0},
                                     **kwargs)
 
             # Evaluate this iteration's tree on validation data
@@ -928,7 +936,8 @@ class xRFM:
                 tree = self._build_tree_with_iterations(X, y, X_val, y_val,
                                                         time_limit_s=time_limit_s, **kwargs)
             else:
-                tree = self._build_tree(X, y, X_val, y_val, is_root=True, time_limit_s=time_limit_s, **kwargs)
+                tree = self._build_tree(X, y, X_val, y_val, is_root=True, time_limit_s=time_limit_s,
+                                        split_tracker={'count': 0}, **kwargs)
             self.trees.append(tree)
             self._register_tree_cache(tree)
 
