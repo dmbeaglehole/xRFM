@@ -1,6 +1,7 @@
 import sys
 import time
 import random
+import warnings
 from typing import List, Optional
 
 import numpy as np
@@ -33,9 +34,10 @@ class xRFM:
         Parameters to pass to the RFM model at each leaf node.
         If None, default parameters are used.
     
-    min_subset_size : int, default=60000
-        The minimum size of a subset to further split. If a subset has fewer 
-        samples than this, a base RFM model is fit on it directly.
+    max_leaf_size : int, default=60000
+        The maximum size of a leaf (i.e. the minimum size of a subset to further split).
+        If a subset has fewer samples than this, a base RFM model is fit on it directly.
+        The deprecated alias ``min_subset_size`` is still accepted in the constructor.
     
     number_of_splits : int, optional
         Minimum number of splits to perform while building each tree. If None,
@@ -132,7 +134,7 @@ class xRFM:
     but does not comply with all requirements.
     """
 
-    def __init__(self, rfm_params=None, min_subset_size=60_000,
+    def __init__(self, rfm_params=None, max_leaf_size=60_000,
                  number_of_splits=None, device=None, n_trees=1, n_tree_iters=0,
                  split_method='top_vector_agop_on_subset', tuning_metric=None,
                  categorical_info=None, default_rfm_params=None,
@@ -142,7 +144,13 @@ class xRFM:
                  keep_weight_frac_in_predict=0.99, max_leaf_count_in_ensemble=12, 
                  temp_tuning_space: Optional[List[float]]= None,
                  **kwargs):
-        self._base_min_subset_size = int(min_subset_size)
+        deprecated_min_subset_size = kwargs.pop('min_subset_size', None)
+        if deprecated_min_subset_size is not None:
+            if max_leaf_size != 60_000:
+                raise ValueError("Cannot specify both max_leaf_size and min_subset_size.")
+            max_leaf_size = deprecated_min_subset_size
+
+        self._base_max_leaf_size = int(max_leaf_size)
         self.rfm_params = rfm_params
         self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.trees = None
@@ -174,7 +182,9 @@ class xRFM:
 
         # scale the maximum leaf size relative to a 40GB GPU; assume quadratic memory growth
         subset_scale = memory_scaling_factor(self.device, quadratic=True)
-        self.min_subset_size = max(int(self._base_min_subset_size * subset_scale), 1)
+        self.max_leaf_size = max(int(self._base_max_leaf_size * subset_scale), 1)
+        # Backwards compatibility for downstream users referencing min_subset_size directly.
+        self.min_subset_size = self.max_leaf_size
 
         if random_state is not None:
             random.seed(random_state)
@@ -574,7 +584,7 @@ class xRFM:
 
         # Check terminal conditions
         should_create_leaf = False
-        if n_samples <= self.min_subset_size:
+        if n_samples <= self.max_leaf_size:
             if self.number_of_splits is None or split_tracker['count'] >= self.number_of_splits:
                 should_create_leaf = True
 
@@ -610,7 +620,7 @@ class xRFM:
             sub_time_limit_s = None
             if time_limit_s is not None:
                 # spend ~half of the time for fitting agop_on_subset and the other half for fitting the leaves
-                n_leaves = 2 ** np.ceil(np.log2(n_samples / self.min_subset_size))
+                n_leaves = 2 ** np.ceil(np.log2(n_samples / self.max_leaf_size))
                 sub_time_limit_s = 0.5 * time_limit_s / (n_leaves - 1)
             M = self._get_agop_on_subset(X, y, time_limit_s=sub_time_limit_s)
             if self.split_method == 'top_vector_agop_on_subset':
