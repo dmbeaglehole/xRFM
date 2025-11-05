@@ -477,6 +477,50 @@ class LpqLaplaceKernel(Kernel):
         kernel_mat.mul_(-1. / (self.bandwidth ** self.exponent))
         kernel_mat.exp_()
         return kernel_mat
+    
+    def _get_kernel_matrix_categorical_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        numerical_indices = self.numerical_indices
+        categorical_indices = self.categorical_indices
+        categorical_vectors = self.categorical_vectors
+
+        assert len(numerical_indices) > 0 or len(categorical_indices) > 0, "No numerical or categorical features"
+        assert len(categorical_indices) == len(categorical_vectors), "Number of categorical index and vector groups must match"
+
+        dist_mat = torch.zeros((x.shape[0], z.shape[0]), device=x.device, dtype=x.dtype)
+
+        if numerical_indices.numel() > 0:
+            mat_num = get_sub_matrix(mat, numerical_indices)
+            x_num = self._transform_m(x[:, numerical_indices], mat_num)
+            z_num = self._transform_m(z[:, numerical_indices], mat_num)
+            num_dist = torch.cdist(x_num, z_num, p=self.p)
+            num_dist.clamp_(min=0)
+            if self.p != 1.0:
+                num_dist.pow_(self.p)
+            dist_mat.add_(num_dist)
+
+        for cat_idx, cat_vecs in zip(categorical_indices, categorical_vectors):
+            x_cat = x[:, cat_idx].argmax(dim=-1)
+            z_cat = z[:, cat_idx].argmax(dim=-1)
+
+            mat_cat = get_sub_matrix(mat, cat_idx)
+            cat_vecs_transformed = self._transform_m(cat_vecs, mat_cat)
+            cat_dist = torch.cdist(cat_vecs_transformed, cat_vecs_transformed, p=self.p)
+            cat_dist.clamp_(min=0)
+            if self.p != 1.0:
+                cat_dist.pow_(self.p)
+
+            dist_mat.add_(cat_dist[x_cat[:, None], z_cat[None, :]])
+
+        dist_mat.clamp_(min=0)
+        if self.p != 1.0:
+            dist_mat.pow_(1.0 / self.p)
+
+        dist_mat.pow_(self.exponent)
+        if not self.is_adaptive_bandwidth:
+            self._adapt_bandwidth(dist_mat)
+        dist_mat.mul_(-1. / (self.bandwidth ** self.exponent))
+        dist_mat.exp_()
+        return dist_mat
 
     def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
         xm = self._transform_m(x, mat)

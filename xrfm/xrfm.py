@@ -929,7 +929,7 @@ class xRFM:
 
         if self.n_threads is not None:
             torch.set_num_threads(old_n_threads)
-
+        
         if has_split and self.use_temperature_tuning:
             self.fit_temperature(X_val, y_val, self.temp_tuning_space)
 
