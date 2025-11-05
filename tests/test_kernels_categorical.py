@@ -52,7 +52,7 @@ def _make_categorical_inputs(device):
         (
             kernel_module.ProductLaplaceKernel,
             kernel_module.KermacProductLaplaceKernel,
-            {"bandwidth": 1.7, "exponent": 1.0},
+            {"bandwidth": 1.7, "exponent": 1.1},
         ),
         (
             kernel_module.LpqLaplaceKernel,
