@@ -961,7 +961,7 @@ class RFM(torch.nn.Module):
 
         metric = Metric.from_name(self.tuning_metric)
         if 'agop' in metric.required_quantities:
-            self.agop = self.fit_M(X_train, y_train, M_batch_size=M_batch_size, inplace=False, **kwargs)
+            self.agop = self.fit_M(X_train, self.n_classes, M_batch_size=M_batch_size, inplace=False, **kwargs)
         val_metrics = self.score(X_val, y_val, metrics=[self.tuning_metric])
         if self.verbose:
             prefix = "Final" if is_final else f"Round {iteration_num}"
@@ -1012,14 +1012,16 @@ class RFM(torch.nn.Module):
         # Validate and prepare data
         X_train, y_train, X_val, y_val = self.validate_data(train_data, val_data)
         n, d = X_train.shape
+        assert len(y_train.shape) == 2, "y_train must be a 2D tensor"
+
         print("="*70)
         print(f"Fitting RFM with ntrain: {n}, d: {d}, and nval: {X_val.shape[0]}")
         print("="*70)
 
-
-        if self.class_converter is None:
-            self.class_converter = ClassificationConverter(mode='zero_one', n_classes=max(2, y_train.shape[1]))
-
+        self.n_classes = y_train.shape[1]
+        if self.class_converter is None and self.n_classes > 1:
+            # Classification converter is needed for classification tasks
+            self.class_converter = ClassificationConverter(mode='zero_one', n_classes=self.n_classes)
 
         self.adapt_params_to_data(n, d)
         
@@ -1062,12 +1064,12 @@ class RFM(torch.nn.Module):
                 if self._should_early_stop(val_metric, best_metric):
                     print(f"Early stopping at iteration {i}")
                     if not return_best_params:
-                        self.fit_M(X_train, y_train.shape[-1], M_batch_size=M_batch_size, **kwargs)
+                        self.fit_M(X_train, self.n_classes, M_batch_size=M_batch_size, **kwargs)
                     early_stopped = True
                     break
 
             # Fit M matrix and cleanup
-            self.fit_M(X_train, y_train.shape[-1], M_batch_size=M_batch_size, **kwargs)
+            self.fit_M(X_train, self.n_classes, M_batch_size=M_batch_size, **kwargs)
             del self.weights
             
             if return_Ms:
@@ -1103,7 +1105,7 @@ class RFM(torch.nn.Module):
 
         if kwargs.get('get_agop_best_model', False):
             # fit AGOP of best model
-            self.agop_best_model = self.fit_M(X_train, y_train, M_batch_size=M_batch_size, inplace=False, **kwargs)
+            self.agop_best_model = self.fit_M(X_train, self.n_classes, M_batch_size=M_batch_size, inplace=False, **kwargs)
 
         return Ms if return_Ms else None
     
