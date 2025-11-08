@@ -961,7 +961,7 @@ class RFM(torch.nn.Module):
 
         metric = Metric.from_name(self.tuning_metric)
         if 'agop' in metric.required_quantities:
-            self.agop = self.fit_M(X_train, y_train, M_batch_size=M_batch_size, inplace=False, **kwargs)
+            self.agop = self.fit_M(X_train, y_train.shape[-1], M_batch_size=M_batch_size, inplace=False, **kwargs)
         val_metrics = self.score(X_val, y_val, metrics=[self.tuning_metric])
         if self.verbose:
             prefix = "Final" if is_final else f"Round {iteration_num}"
@@ -1103,7 +1103,7 @@ class RFM(torch.nn.Module):
 
         if kwargs.get('get_agop_best_model', False):
             # fit AGOP of best model
-            self.agop_best_model = self.fit_M(X_train, y_train, M_batch_size=M_batch_size, inplace=False, **kwargs)
+            self.agop_best_model = self.fit_M(X_train, y_train.shape[-1], M_batch_size=M_batch_size, inplace=False, **kwargs)
 
         return Ms if return_Ms else None
     
