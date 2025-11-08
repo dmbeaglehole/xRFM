@@ -1,7 +1,7 @@
 # xRFM - Recursive Feature Machines optimized for tabular data
 
 
-**xRFM** is a scalable implementation of Recursive Feature Machines (RFMs) optimized for tabular data. This library provides both the core RFM algorithm and a tree-based extension (xRFM) that enables efficient processing of large datasets through recursive data splitting.
+**xRFM** is a scalable implementation of Recursive Feature Machines (RFMs) optimized for tabular data. This library provides both the core RFM algorithm and a tree-based extension (xRFM) that enables efficient processing of large datasets through recursive data splitting. For immediate use of xRFM with tuning and the correct preprocessing, you can also use XRFM_HPO_Regressor or XRFM_HPO_Classifier directly in PyTabKit (https://github.com/dholzmueller/pytabkit).
 
 ## Core Components
 
