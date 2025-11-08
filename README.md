@@ -3,24 +3,6 @@
 
 **xRFM** is a scalable implementation of Recursive Feature Machines (RFMs) optimized for tabular data. This library provides both the core RFM algorithm and a tree-based extension (xRFM) that enables efficient processing of large datasets through recursive data splitting. For immediate use of xRFM with tuning and the correct preprocessing, you can also use XRFM_HPO_Regressor or XRFM_HPO_Classifier directly in PyTabKit (https://github.com/dholzmueller/pytabkit).
 
-## Core Components
-
-```
-xRFM/
-├── xrfm/
-│   ├── xrfm.py              # Main xRFM class (tree-based)
-│   ├── tree_utils.py        # Tree manipulation utilities
-│   └── rfm_src/
-│       ├── recursive_feature_machine.py  # Base RFM class
-│       ├── kernels.py       # Kernel implementations
-│       ├── eigenpro.py      # EigenPro optimization
-│       ├── utils.py         # Utility functions
-│       ├── svd.py           # SVD operations
-│       └── gpu_utils.py     # GPU memory management
-├── examples/                # Usage examples
-└── setup.py                # Package configuration
-```
-
 ## Installation 
 
 ### With GPU
@@ -207,6 +189,24 @@ model = xRFM(
 
 model.fit(X_train, y_train, X_val, y_val)
 y_pred = model.predict(X_test)
+```
+
+## Core Components
+
+```
+xRFM/
+├── xrfm/
+│   ├── xrfm.py              # Main xRFM class (tree-based)
+│   ├── tree_utils.py        # Tree manipulation utilities
+│   └── rfm_src/
+│       ├── recursive_feature_machine.py  # Base RFM class
+│       ├── kernels.py       # Kernel implementations
+│       ├── eigenpro.py      # EigenPro optimization
+│       ├── utils.py         # Utility functions
+│       ├── svd.py           # SVD operations
+│       └── gpu_utils.py     # GPU memory management
+├── examples/                # Usage examples
+└── setup.py                # Package configuration
 ```
 
 ## File Structure
