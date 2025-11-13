@@ -606,6 +606,11 @@ class xRFM:
         # Generate projection vector
         if avg_M is not None and self.split_method == 'random_global_agop':
             projection = self._generate_projection_from_M(X.shape[1], avg_M)
+        elif self.split_method == 'pca':
+            Xb = X - X.mean(dim=0, keepdim=True)
+            _, _, Vt = torch.linalg.svd(Xb.T @ Xb,
+                                        full_matrices=False)  # do computation on Xb.T @ Xb assuming n >> d
+            projection = Vt[0]
         elif self.split_method == 'random_pca':
             Xb = X - X.mean(dim=0, keepdim=True)
             Xcov = Xb.T @ Xb
