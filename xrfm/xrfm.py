@@ -140,7 +140,7 @@ class xRFM:
                  categorical_info=None, default_rfm_params=None,
                  fixed_vector=None, callback=None, classification_mode='zero_one', 
                  time_limit_s=None, n_threads=None, refill_size=1500, random_state=None,
-                 split_temperature=None, overlap_fraction=0.1, use_temperature_tuning=True,
+                 split_temperature=None, overlap_fraction=0.0, use_temperature_tuning=True,
                  keep_weight_frac_in_predict=0.99, max_leaf_count_in_ensemble=12, 
                  temp_tuning_space: Optional[List[float]]= None,
                  **kwargs):
