@@ -611,6 +611,27 @@ class xRFM:
             _, _, Vt = torch.linalg.svd(Xb.T @ Xb,
                                         full_matrices=False)  # do computation on Xb.T @ Xb assuming n >> d
             projection = Vt[0]
+        elif self.split_method == 'rf_criterion':
+            def _sum_squared_error(values: torch.Tensor) -> torch.Tensor:
+                centered = values - values.mean(dim=0, keepdim=True)
+                return torch.sum(centered**2).item()
+
+            best_dim = 0
+            best_score = float('inf')
+            for dim in range(X.shape[1]):
+                projections_dim = X[:, dim]
+                dim_median = torch.median(projections_dim)
+                left_mask_dim, right_mask_dim = self._get_balanced_split(projections_dim, dim_median)
+                y_left_dim = y[left_mask_dim]
+                y_right_dim = y[right_mask_dim]
+
+                score = _sum_squared_error(y_left_dim) + _sum_squared_error(y_right_dim)
+                if score < best_score:
+                    best_score = score
+                    best_dim = dim
+
+            projection = torch.zeros(X.shape[1], dtype=X.dtype, device=X.device)
+            projection[best_dim] = 1.0
         elif self.split_method == 'random_pca':
             Xb = X - X.mean(dim=0, keepdim=True)
             Xcov = Xb.T @ Xb
