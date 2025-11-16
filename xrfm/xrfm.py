@@ -18,6 +18,7 @@ import copy
 from .rfm_src.class_conversion import ClassificationConverter
 from .rfm_src.metrics import Metric
 from .tree_utils import get_param_tree
+from .feature_selection import FeatureSelector
 
 DEFAULT_TEMP_TUNING_SPACE = [0.0] + list(np.logspace(np.log10(0.025), np.log10(4.5), num=20))
 
@@ -127,7 +128,16 @@ class xRFM:
     max_leaf_count_in_ensemble : int
         Maximum number of leaves evaluated per sample during soft prediction.
         Acts as a hard cap after enforcing keep_weight_frac_in_predict.
-    
+
+    pre_select_features : bool, default=False
+        Whether to run an initial AGOP-based feature selection before training.
+        When enabled, a standalone RFM is used to compute an AGOP on a subset of the data
+        with the same settings used for split direction generation.
+
+    pre_select_fraction : float, default=0.9
+        Fraction of the AGOP diagonal weight to retain during pre-selection. The minimum
+        number of coordinates whose diagonal mass exceeds this fraction are kept.
+
     Notes
     -----
     The model follows sklearn's estimator interface with fit, predict, predict_proba, and score methods,
@@ -141,7 +151,8 @@ class xRFM:
                  fixed_vector=None, callback=None, classification_mode='zero_one', 
                  time_limit_s=None, n_threads=None, refill_size=1500, random_state=None,
                  split_temperature=None, overlap_fraction=0.0, use_temperature_tuning=True,
-                 keep_weight_frac_in_predict=0.99, max_leaf_count_in_ensemble=12, 
+                 keep_weight_frac_in_predict=0.99, max_leaf_count_in_ensemble=12,
+                 pre_select_features=False, pre_select_fraction=0.9,
                  temp_tuning_space: Optional[List[float]]= None,
                  **kwargs):
         deprecated_min_subset_size = kwargs.pop('min_subset_size', None)
@@ -179,6 +190,11 @@ class xRFM:
         if max_leaf_count_in_ensemble < 1:
             raise ValueError("max_leaf_count_in_ensemble must be at least 1.")
         self.max_leaf_count_in_ensemble = int(max_leaf_count_in_ensemble)
+        self.pre_select_features = bool(pre_select_features)
+        if not (0.0 < pre_select_fraction <= 1.0):
+            raise ValueError("pre_select_fraction must lie in (0.0, 1.0].")
+        self.pre_select_fraction = float(pre_select_fraction)
+        self.feature_selector_ = None
 
         # scale the maximum leaf size relative to a 40GB GPU; assume quadratic memory growth
         subset_scale = memory_scaling_factor(self.device, quadratic=True)
@@ -430,12 +446,11 @@ class xRFM:
         list
             List of AGOP matrices from all leaf models
         """
-        return self._collect_attr('agop_best_model')
-        # best_agops = []
-        # for t in self.trees:
-        #     leaf_nodes = self._collect_leaf_nodes(t)
-        #     best_agops += [node['model'].agop_best_model for node in leaf_nodes]
-        # return best_agops
+        agops = self._collect_attr('agop_best_model')
+        selector = getattr(self, 'feature_selector_', None)
+        if selector is None:
+            return agops
+        return [selector.inflate_agop(agop) for agop in agops]
 
     def collect_Ms(self):
         """
@@ -869,6 +884,7 @@ class xRFM:
         if self.n_threads is not None:
             old_n_threads = torch.get_num_threads()
             torch.set_num_threads(self.n_threads)
+        self.feature_selector_ = None
 
         # Convert to torch tensors if needed
         if not isinstance(X, torch.Tensor):
@@ -878,6 +894,7 @@ class xRFM:
 
         X = X.to(self.device)
         X_val = X_val.to(self.device)
+        original_feature_dim = X.shape[1]
 
         y = torch.as_tensor(y).to(self.device)
         y_val = torch.as_tensor(y_val).to(self.device)
@@ -926,6 +943,17 @@ class xRFM:
                 y_val = y_val.unsqueeze(-1)
             assert len(y.shape) == 2
             self.extra_rfm_params_ = dict()
+
+        if self.pre_select_features:
+            agop_for_selection = self._get_agop_on_subset(X, y)
+            self.feature_selector_ = FeatureSelector.from_agop(
+                agop_for_selection,
+                fraction=self.pre_select_fraction,
+                original_dim=original_feature_dim,
+            )
+            X = self.feature_selector_.transform(X)
+            X_val = self.feature_selector_.transform(X_val)
+            del agop_for_selection
 
         self.data_dim = X.shape[1]
 
@@ -1104,14 +1132,20 @@ class xRFM:
         float
             Metric value for self.tuning_metric
         """
+        if not isinstance(samples, torch.Tensor):
+            samples = torch.tensor(samples, dtype=torch.float32, device=self.device)
+        else:
+            samples = samples.to(self.device)
+        if self.feature_selector_ is not None:
+            samples = self.feature_selector_.transform(samples)
 
         metric = Metric.from_name(self.tuning_metric)
         assert len(targets.shape) == 2 and targets.shape[1] >= 2
         kwargs = dict(y_true_reg=targets)
         if 'y_pred' in metric.required_quantities:
-            kwargs['y_pred'] = self._predict_tree(samples.to(self.device), tree).to(targets.device)
+            kwargs['y_pred'] = self._predict_tree(samples, tree).to(targets.device)
         if 'y_pred_proba' in metric.required_quantities:
-            kwargs['y_pred_proba'] = self._predict_tree(samples.to(self.device), tree, proba=True).to(targets.device)
+            kwargs['y_pred_proba'] = self._predict_tree(samples, tree, proba=True).to(targets.device)
         if 'y_true_class' in metric.required_quantities:
             kwargs['y_true_class'] = self.class_converter_.numerical_to_labels(targets)
 
@@ -1143,6 +1177,8 @@ class xRFM:
         if not isinstance(X, torch.Tensor):
             X = torch.tensor(X, dtype=torch.float32, device=self.device)
         X = X.to(self.device)
+        if self.feature_selector_ is not None:
+            X = self.feature_selector_.transform(X)
 
         all_predictions = []
 
@@ -1188,6 +1224,10 @@ class xRFM:
         # Convert to torch tensor if needed
         if not isinstance(X, torch.Tensor):
             X = torch.tensor(X, dtype=torch.float32, device=self.device)
+        else:
+            X = X.to(self.device)
+        if self.feature_selector_ is not None:
+            X = self.feature_selector_.transform(X)
         all_probas = []
         for tree in self.trees:
             tree_probas = self._predict_tree(X, tree, proba=True)
