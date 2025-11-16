@@ -52,7 +52,8 @@ class Kernel:
         self.is_adaptive_bandwidth = False
         return
 
-    def _adapt_bandwidth(self, kernel_mat: torch.Tensor, adapt_mode='median', sub_mat_size=5000):
+    def _adapt_bandwidth(self, kernel_mat: torch.Tensor, adapt_mode='median', 
+    sub_mat_size=5000, eps=1e-8):
         """
         Input is distance matrix with entries D(x,z)^p for exponent p.
         """
@@ -78,6 +79,8 @@ class Kernel:
             bandwidth_multiplier = torch.mean(sample_matrix[mask])
         else:
             raise ValueError(f"Invalid adapt_mode: {adapt_mode}")
+            
+        bandwidth_multiplier = bandwidth_multiplier.clamp(min=eps) # avoid division by zero
         self.bandwidth = self.base_bandwidth * bandwidth_multiplier.item()
         self.is_adaptive_bandwidth = True
         return
