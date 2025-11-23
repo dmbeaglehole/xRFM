@@ -1,5 +1,3 @@
-import copy
-
 import pytest
 from sklearn.metrics import root_mean_squared_error, accuracy_score
 import torch
@@ -8,6 +6,7 @@ import numpy as np
 import torch.nn.functional as F
 
 from xrfm import xRFM
+from xrfm.feature_selection import FeatureSelector
 from xrfm.rfm_src import kernels as kernel_module
 
 
@@ -146,6 +145,76 @@ def test_classification(tuning_metric, classification_mode, n_classes):
     acc = accuracy_score(y_test.cpu().numpy(), model.predict(X_test))
     if acc < 0.8:
         raise AssertionError(f'Accuracy was too small: {acc:g} is smaller than 0.8')
+
+
+def test_preselection_updates_categorical_metadata(monkeypatch):
+    device = torch.device('cpu')
+    X = torch.randn(12, 7, device=device)
+    y = torch.randn(12, 1, device=device)
+
+    categorical_info = {
+        'numerical_indices': torch.tensor([0, 1], dtype=torch.long),
+        'categorical_indices': [
+            torch.tensor([2, 3, 4], dtype=torch.long),
+            torch.tensor([5, 6], dtype=torch.long),
+        ],
+        'categorical_vectors': [
+            torch.eye(3, dtype=torch.float32),
+            torch.eye(2, dtype=torch.float32),
+        ],
+    }
+
+    rfm_params = {
+        'model': {
+            'kernel': 'l2',
+            'bandwidth': 1.0,
+            'exponent': 1.0,
+            'diag': False,
+            'bandwidth_mode': 'constant',
+            'fast_categorical': True,
+        },
+        'fit': {
+            'reg': 1e-3,
+            'iters': 1,
+            'verbose': False,
+            'early_stop_rfm': False,
+            'return_best_params': False,
+        },
+    }
+
+    active_indices = torch.tensor([1, 2, 3, 4], dtype=torch.long)
+
+    def fake_selector(cls, agop, fraction, original_dim):
+        return FeatureSelector(active_indices, original_dim=original_dim)
+
+    monkeypatch.setattr(FeatureSelector, "from_agop", classmethod(fake_selector))
+    monkeypatch.setattr(xRFM, "_get_agop_on_subset",
+                        lambda self, X, y, **kwargs: torch.ones(X.shape[1], device=X.device))
+
+    model = xRFM(
+        rfm_params=rfm_params,
+        device=device,
+        tuning_metric='mse',
+        categorical_info=categorical_info,
+        pre_select_features=True,
+        pre_select_fraction=0.5,
+        n_trees=1,
+        n_threads=1,
+    )
+
+    model.fit(X, y, X, y)
+
+    expected_num = torch.tensor([0], dtype=torch.long)
+    expected_cat_indices = torch.tensor([1, 2, 3], dtype=torch.long)
+
+    torch.testing.assert_close(model.categorical_info['numerical_indices'], expected_num)
+    assert len(model.categorical_info['categorical_indices']) == 1
+    torch.testing.assert_close(model.categorical_info['categorical_indices'][0], expected_cat_indices)
+    torch.testing.assert_close(model.categorical_info['categorical_vectors'][0], torch.eye(3, dtype=torch.float32))
+
+    # Original metadata should remain unchanged
+    torch.testing.assert_close(categorical_info['numerical_indices'], torch.tensor([0, 1], dtype=torch.long))
+    assert len(categorical_info['categorical_indices']) == 2
 
 
 def _make_regression_data(seed=0, n_train=256, n_val=128, d=8, device=None):

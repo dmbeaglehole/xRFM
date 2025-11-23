@@ -174,6 +174,7 @@ class xRFM:
         self.number_of_splits = number_of_splits
         self.maximizing_metric = False if tuning_metric is None else Metric.from_name(tuning_metric).should_maximize
         self.categorical_info = categorical_info
+        self._original_categorical_info = None
         self.fixed_vector = fixed_vector
         self.callback = callback
         self.classification_mode = classification_mode
@@ -462,6 +463,64 @@ class xRFM:
             List of M matrices from all leaf models
         """
         return self._collect_attr('M')
+
+    def _remap_categorical_info(self, base_info, selector):
+        """
+        Project categorical metadata to the reduced feature space after pre-selection.
+        """
+        if base_info is None or selector is None:
+            return base_info
+
+        index_map = {int(idx): new_idx for new_idx, idx in enumerate(selector.active_indices.tolist())}
+
+        def _remap_tensor(idx_tensor):
+            device = None
+            if isinstance(idx_tensor, torch.Tensor):
+                device = idx_tensor.device
+            if idx_tensor is None:
+                return torch.empty(0, dtype=torch.long, device=selector.active_indices.device), []
+            idx_tensor = torch.as_tensor(idx_tensor, dtype=torch.long, device=device)
+            remapped, kept_positions = [], []
+            for pos, idx in enumerate(idx_tensor.tolist()):
+                mapped = index_map.get(int(idx))
+                if mapped is not None:
+                    remapped.append(mapped)
+                    kept_positions.append(pos)
+            remapped_tensor = torch.tensor(remapped, dtype=torch.long, device=device) if device is not None else torch.tensor(remapped, dtype=torch.long)
+            return remapped_tensor, kept_positions
+
+        updated_info = {k: v for k, v in base_info.items() if k not in ('numerical_indices', 'categorical_indices', 'categorical_vectors')}
+
+        if 'numerical_indices' in base_info:
+            new_numerical, _ = _remap_tensor(base_info.get('numerical_indices'))
+            updated_info['numerical_indices'] = new_numerical
+
+        categorical_indices = base_info.get('categorical_indices')
+        categorical_vectors = base_info.get('categorical_vectors')
+        if categorical_indices is not None:
+            new_cat_indices = []
+            new_cat_vectors = [] if categorical_vectors is not None else None
+            for group_idx, cat_idx in enumerate(categorical_indices):
+                remapped_idx, kept_positions = _remap_tensor(cat_idx)
+                if remapped_idx.numel() == 0:
+                    continue
+
+                new_cat_indices.append(remapped_idx)
+                if categorical_vectors is not None:
+                    vec = categorical_vectors[group_idx]
+                    vec_device = vec.device if isinstance(vec, torch.Tensor) else None
+                    vec_tensor = torch.as_tensor(vec, device=vec_device)
+                    keep_tensor = torch.tensor(kept_positions, dtype=torch.long, device=vec_tensor.device)
+                    trimmed = vec_tensor.index_select(0, keep_tensor)
+                    if trimmed.ndim > 1:
+                        trimmed = trimmed.index_select(1, keep_tensor)
+                    new_cat_vectors.append(trimmed)
+
+            updated_info['categorical_indices'] = new_cat_indices
+            if new_cat_vectors is not None:
+                updated_info['categorical_vectors'] = new_cat_vectors
+
+        return updated_info
 
     def _average_M_across_leaves(self, tree):
         """
@@ -953,6 +1012,13 @@ class xRFM:
             )
             X = self.feature_selector_.transform(X)
             X_val = self.feature_selector_.transform(X_val)
+            if self.categorical_info is not None:
+                if self._original_categorical_info is None:
+                    self._original_categorical_info = self.categorical_info
+                self.categorical_info = self._remap_categorical_info(
+                    self._original_categorical_info,
+                    self.feature_selector_,
+                )
             del agop_for_selection
 
         self.data_dim = X.shape[1]
@@ -1428,9 +1494,21 @@ class xRFM:
         """
         self.rfm_params = state_dict['rfm_params']
         self.categorical_info = state_dict['categorical_info']
+        self._original_categorical_info = self.categorical_info
         self.n_classes_ = state_dict['n_classes']
         self.extra_rfm_params_ = state_dict['extra_rfm_params_']
         self.solver = state_dict.get('solver', None)
+        selector_state = state_dict.get('feature_selector')
+        if selector_state is not None:
+            self.feature_selector_ = FeatureSelector(
+                selector_state['active_indices'],
+                original_dim=selector_state['original_dim'],
+            )
+            X_train = self.feature_selector_.transform(X_train)
+            self.data_dim = self.feature_selector_.active_dim
+        else:
+            self.feature_selector_ = None
+            self.data_dim = X_train.shape[1]
 
         if self.n_classes_ > 0:
             self.classification_mode = state_dict['classification_mode']
@@ -1520,6 +1598,11 @@ class xRFM:
             'param_trees': param_trees,
             'n_classes': self.n_classes_,
         }
+        if self.feature_selector_ is not None:
+            state_dict['feature_selector'] = {
+                'active_indices': self.feature_selector_.active_indices.cpu(),
+                'original_dim': self.feature_selector_.original_dim,
+            }
 
         if 'solver' in self.rfm_params['fit']:
             state_dict['solver'] = self.rfm_params['fit']['solver']
