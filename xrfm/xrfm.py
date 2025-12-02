@@ -16,7 +16,8 @@ import copy
 
 from .rfm_src.class_conversion import ClassificationConverter
 from .rfm_src.metrics import Metric
-from .tree_utils import get_param_tree, get_top_eigenvector
+from .rfm_src.utils import get_top_eigenvector
+from .tree_utils import get_param_tree
 
 DEFAULT_TEMP_TUNING_SPACE = [0.0] + list(np.logspace(np.log10(0.025), np.log10(4.5), num=20))
 
