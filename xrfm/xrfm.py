@@ -1,7 +1,6 @@
 import sys
 import time
 import random
-import warnings
 from typing import List, Optional
 
 import numpy as np
@@ -17,58 +16,9 @@ import copy
 
 from .rfm_src.class_conversion import ClassificationConverter
 from .rfm_src.metrics import Metric
-from .tree_utils import get_param_tree
+from .tree_utils import get_param_tree, get_top_eigenvector
 
 DEFAULT_TEMP_TUNING_SPACE = [0.0] + list(np.logspace(np.log10(0.025), np.log10(4.5), num=20))
-
-# Threshold for using iterative vs full SVD for top eigenvector extraction
-_TOP_EIGENVECTOR_ITERATIVE_THRESHOLD = 256
-
-
-def _get_top_eigenvector(M: torch.Tensor, method: str = 'auto') -> torch.Tensor:
-    """
-    Extract the top eigenvector from a symmetric positive semi-definite matrix.
-
-    Uses iterative methods (lobpcg) for large matrices to avoid O(d³) full SVD,
-    falling back to full SVD for small matrices or when iterative methods fail.
-
-    Parameters
-    ----------
-    M : torch.Tensor
-        Symmetric positive semi-definite matrix of shape (d, d)
-    method : str
-        'auto' (default): Use lobpcg for d > threshold, else full SVD
-        'lobpcg': Force iterative method
-        'svd': Force full SVD
-
-    Returns
-    -------
-    torch.Tensor
-        Top eigenvector of shape (d,)
-    """
-    d = M.shape[0]
-
-    if method == 'auto':
-        use_iterative = d > _TOP_EIGENVECTOR_ITERATIVE_THRESHOLD
-    elif method == 'lobpcg':
-        use_iterative = True
-    else:
-        use_iterative = False
-
-    if use_iterative:
-        try:
-            # lobpcg is much faster for large matrices when only top-k needed
-            # Add small regularization for numerical stability
-            M_reg = M + 1e-6 * torch.eye(d, device=M.device, dtype=M.dtype)
-            eigenvalues, eigenvectors = torch.lobpcg(M_reg, k=1, largest=True)
-            return eigenvectors[:, 0]
-        except Exception:
-            # Fall back to SVD if lobpcg fails (can happen with ill-conditioned matrices)
-            pass
-
-    # Full SVD fallback - more stable but O(d³)
-    _, _, Vt = torch.linalg.svd(M, full_matrices=False)
-    return Vt[0]
 
 class xRFM:
     """
@@ -699,14 +649,14 @@ class xRFM:
                 sub_time_limit_s = 0.5 * time_limit_s / (n_leaves - 1)
             M = self._get_agop_on_subset(X, y, time_limit_s=sub_time_limit_s)
             if self.split_method == 'top_vector_agop_on_subset':
-                projection = _get_top_eigenvector(M)
+                projection = get_top_eigenvector(M)
             elif self.split_method == 'random_agop_on_subset':
                 projection = self._generate_projection_from_M(X.shape[1], M)
             elif self.split_method == 'top_pc_agop_on_subset':
                 sqrtM = matrix_power(M, 0.5)
                 XM = X @ sqrtM
                 Xb = XM - XM.mean(dim=0, keepdim=True)
-                projection = _get_top_eigenvector(Xb.T @ Xb)
+                projection = get_top_eigenvector(Xb.T @ Xb)
         elif self.split_method == 'fixed_vector':
             projection = self.fixed_vector
         else:
