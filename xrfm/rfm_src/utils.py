@@ -5,10 +5,60 @@ import torch.nn as nn
 import torch.nn.functional as F
 import time
 
+# Threshold for using iterative vs full SVD for top eigenvector extraction
+_TOP_EIGENVECTOR_ITERATIVE_THRESHOLD = 256
+
+
 def device_from_str(device):
     if device is None:
         return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     return torch.device(device)
+
+
+def get_top_eigenvector(M: torch.Tensor, method: str = 'auto', eps: float = 1e-6) -> torch.Tensor:
+    """
+    Extract the top eigenvector from a symmetric positive semi-definite matrix.
+
+    Uses iterative methods (lobpcg) for large matrices to avoid O(d³) full SVD,
+    falling back to full SVD for small matrices or when iterative methods fail.
+
+    Parameters
+    ----------
+    M : torch.Tensor
+        Symmetric positive semi-definite matrix of shape (d, d)
+    method : str
+        'auto' (default): Use lobpcg for d > threshold, else full SVD
+        'lobpcg': Force iterative method
+        'svd': Force full SVD
+
+    Returns
+    -------
+    torch.Tensor
+        Top eigenvector of shape (d,)
+    """
+    d = M.shape[0]
+
+    if method == 'auto':
+        use_iterative = d > _TOP_EIGENVECTOR_ITERATIVE_THRESHOLD
+    elif method == 'lobpcg':
+        use_iterative = True
+    else:
+        use_iterative = False
+
+    if use_iterative:
+        try:
+            # lobpcg is much faster for large matrices when only top-k needed
+            # Add small regularization for numerical stability
+            M_reg = M + eps * torch.eye(d, device=M.device, dtype=M.dtype)
+            eigenvalues, eigenvectors = torch.lobpcg(M_reg, k=1, largest=True)
+            return eigenvectors[:, 0]
+        except Exception:
+            # Fall back to SVD if lobpcg fails (can happen with ill-conditioned matrices)
+            pass
+
+    # Full SVD fallback - more stable but O(d³)
+    _, _, Vt = torch.linalg.svd(M, full_matrices=False)
+    return Vt[0]
 
 def matrix_power(M, power):
     """

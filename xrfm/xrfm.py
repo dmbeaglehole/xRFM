@@ -1,7 +1,6 @@
 import sys
 import time
 import random
-import warnings
 from typing import List, Optional
 
 import numpy as np
@@ -17,6 +16,7 @@ import copy
 
 from .rfm_src.class_conversion import ClassificationConverter
 from .rfm_src.metrics import Metric
+from .rfm_src.utils import get_top_eigenvector
 from .tree_utils import get_param_tree
 
 DEFAULT_TEMP_TUNING_SPACE = [0.0] + list(np.logspace(np.log10(0.025), np.log10(4.5), num=20))
@@ -650,20 +650,14 @@ class xRFM:
                 sub_time_limit_s = 0.5 * time_limit_s / (n_leaves - 1)
             M = self._get_agop_on_subset(X, y, time_limit_s=sub_time_limit_s)
             if self.split_method == 'top_vector_agop_on_subset':
-                # Vt = torch.linalg.eigh(M)[1].T
-                _, _, Vt = torch.linalg.svd(M,
-                                            full_matrices=False)  # more stable than eigh and should be identical for top vectors
-                projection = Vt[0]
+                projection = get_top_eigenvector(M)
             elif self.split_method == 'random_agop_on_subset':
                 projection = self._generate_projection_from_M(X.shape[1], M)
             elif self.split_method == 'top_pc_agop_on_subset':
                 sqrtM = matrix_power(M, 0.5)
                 XM = X @ sqrtM
                 Xb = XM - XM.mean(dim=0, keepdim=True)
-                # _, eig_vecs = torch.linalg.eigh(Xb.T @ Xb)
-                _, _, Vt = torch.linalg.svd(Xb.T @ Xb,
-                                            full_matrices=False)  # do computation on Xb.T @ Xb assuming n >> d
-                projection = Vt[0]
+                projection = get_top_eigenvector(Xb.T @ Xb)
         elif self.split_method == 'fixed_vector':
             projection = self.fixed_vector
         else:
