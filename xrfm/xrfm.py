@@ -1200,9 +1200,9 @@ class xRFM:
         Dispatch tree prediction to hard or soft routing depending on configuration.
         """
         if not self.split_temperature:
-            print("Using hard routing for tree prediction")
+            # print("Using hard routing for tree prediction")
             return self._predict_tree_hard(X, tree, proba=proba)
-        print("Using soft routing for tree prediction")
+        # print("Using soft routing for tree prediction")
         return self._predict_tree_soft(X, tree, proba=proba)
 
     def _predict_tree_hard(self, X, tree, proba=False):
@@ -1620,7 +1620,7 @@ class xRFM:
         X_leaf_groups, X_leaf_group_indices, leaf_nodes = self._get_leaf_groups_and_models_on_samples(X, tree)
         grads = []
         for X_leaf, leaf_node in zip(X_leaf_groups, leaf_nodes):
-            leaf_grads = leaf_node['model'].get_grads(X_leaf)
+            leaf_grads = leaf_node['model'].get_grads(X_leaf.contiguous())
             grads.append(leaf_grads.to(X.device))
 
         order = torch.cat(X_leaf_group_indices, dim=0)

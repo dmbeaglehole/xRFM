@@ -18,6 +18,13 @@ def get_sub_matrix(mat: Union[torch.Tensor, None], indices: torch.Tensor) -> Uni
     else:
         return mat[indices][:, indices]
 
+def _ensure_last_stride_is_one(t: torch.Tensor) -> torch.Tensor:
+    """kermac kernels require the last axis to be contiguous in memory."""
+    if t.stride(-1) != 1:
+        shape = t.shape
+        t = t.reshape(-1).contiguous().view(*shape)
+    return t
+
 class Kernel:
     def __init__(self):
         self.is_adaptive_bandwidth = True
@@ -687,6 +694,12 @@ class KermacProductLaplaceKernel(Kernel):
         zm = self._transform_m(z, mat)
         xm = xm.T.contiguous()
         zm = zm.T.contiguous()
+
+        a_mat = _ensure_last_stride_is_one(a_mat)
+        xm = _ensure_last_stride_is_one(xm)
+        zm = _ensure_last_stride_is_one(zm)
+        coefs = _ensure_last_stride_is_one(coefs)
+
         out = kermac.cdist_grad(a_mat, xm, coefs, zm, p=self.exponent)
         return out.transpose(-2, -1).float()
     
@@ -796,12 +809,19 @@ class KermacLpqLaplaceKernel(Kernel):
         mask = (dist_mat >= self.eps).float()   
         dist_mat = torch.clamp(dist_mat, min=self.eps)
         a_mat = -kernel_mat * self.exponent * dist_mat.pow(self.exponent - self.p) / (self.bandwidth ** self.exponent)
-        a_mat = a_mat * mask
+        a_mat = (a_mat * mask).contiguous()
 
         del kernel_mat, dist_mat, mask
 
+
         xm = xm.T.contiguous()
         zm = zm.T.contiguous()
+
+        a_mat = _ensure_last_stride_is_one(a_mat)
+        xm = _ensure_last_stride_is_one(xm)
+        zm = _ensure_last_stride_is_one(zm)
+        coefs = _ensure_last_stride_is_one(coefs)
+
         out = kermac.cdist_grad(a_mat, xm, coefs, zm, p=self.p)
         return out.transpose(-2, -1).float()
 

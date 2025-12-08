@@ -835,6 +835,10 @@ class RFM(torch.nn.Module):
             self.weights.t().to(self.device),
             mat=None if transform is None else transform.to(self.device),
         )
+        if grads.dim() == 4 and grads.shape[0] == 1:
+            grads = grads.squeeze(0)
+        if grads.dim() != 3:
+            raise ValueError(f"Unexpected gradient tensor shape {grads.shape}")
         return grads.permute(1, 0, 2)
 
     def validate_data(self, train_data, val_data):
