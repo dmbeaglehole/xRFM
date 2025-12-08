@@ -808,6 +808,35 @@ class RFM(torch.nn.Module):
         elif original_format['type'] == 'torch':
             return tensor.to(original_format['device'])
 
+    def get_grads(self, samples):
+        """
+        Compute gradients of the model predictions with respect to the inputs.
+
+        Parameters
+        ----------
+        samples : torch.Tensor or numpy.ndarray
+            Points at which to evaluate gradients, shape (n_samples, n_features).
+
+        Returns
+        -------
+        torch.Tensor
+            Gradients with shape (n_samples, n_outputs, n_features) on the
+            model device.
+        """
+        if self.centers is None or self.weights is None:
+            raise ValueError("Model must be fitted before calling get_grads.")
+
+        samples, _ = self.validate_samples(samples)
+        transform = self.sqrtM if self.use_sqrtM else self.M
+
+        grads = self.kernel_obj.get_function_grads(
+            self.centers.to(self.device),
+            samples.to(self.device),
+            self.weights.t().to(self.device),
+            mat=None if transform is None else transform.to(self.device),
+        )
+        return grads.permute(1, 0, 2)
+
     def validate_data(self, train_data, val_data):
         """
         Validate and preprocess training and validation data.

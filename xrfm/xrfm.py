@@ -1611,3 +1611,48 @@ class xRFM:
                 ))
 
         return X_leaf_groups, X_leaf_group_indices, leaf_nodes
+
+
+    def _get_tree_grads_hard(self, X, tree):
+        """
+        Compute gradients for a single tree under hard routing.
+        """
+        X_leaf_groups, X_leaf_group_indices, leaf_nodes = self._get_leaf_groups_and_models_on_samples(X, tree)
+        grads = []
+        for X_leaf, leaf_node in zip(X_leaf_groups, leaf_nodes):
+            leaf_grads = leaf_node['model'].get_grads(X_leaf)
+            grads.append(leaf_grads.to(X.device))
+
+        order = torch.cat(X_leaf_group_indices, dim=0)
+        stacked = torch.cat(grads, dim=0)
+        _, sorted_indices = torch.sort(order)
+        return stacked[sorted_indices]
+
+    def get_grads(self, X):
+        """
+        Compute input gradients of the ensemble prediction using hard routing.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Samples where gradients should be evaluated.
+
+        Returns
+        -------
+        torch.Tensor
+            Gradient tensor with shape (n_samples, n_outputs, n_features).
+        """
+        if self.trees is None:
+            raise ValueError("Model has not been fitted yet.")
+        if self.split_temperature:
+            raise NotImplementedError("Gradient computation for soft routing is not supported.")
+
+        if not isinstance(X, torch.Tensor):
+            X = torch.tensor(X, dtype=torch.float32, device=self.device)
+        else:
+            X = X.to(self.device)
+
+        per_tree_grads = [self._get_tree_grads_hard(X, tree) for tree in self.trees]
+        if len(per_tree_grads) == 1:
+            return per_tree_grads[0]
+        return torch.mean(torch.stack(per_tree_grads, dim=0), dim=0)
