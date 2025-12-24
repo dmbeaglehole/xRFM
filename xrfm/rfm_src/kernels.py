@@ -590,7 +590,8 @@ class SumPowerLaplaceKernel(Kernel):
         zm = self._transform_m(z, mat)
         def forward_func(z):
             # compute \sum_j f(z_j)
-            diffs = torch.abs(xm[:, None, :] - zm[None, :, :]).pow(self.exponent)
+            # IMPORTANT: use the function argument `z` so autograd can differentiate wrt it
+            diffs = torch.abs(xm[:, None, :] - z[None, :, :]).pow(self.exponent)
             diffs = torch.exp((-1. / (self.bandwidth ** self.exponent)) * diffs)
             sum = (1.0 - self.const_mix) * (diffs.sum(dim=-1) / x.shape[-1]) + self.const_mix
             sum = sum ** self.power
@@ -598,6 +599,120 @@ class SumPowerLaplaceKernel(Kernel):
             return coefs @ sum
 
         return torch.func.jacrev(forward_func)(zm)
+
+
+class KermacSumPowerLaplaceKernel(Kernel):
+    """
+    Fast CUDA implementation of `SumPowerLaplaceKernel` using Kermac.
+
+    Matches:
+        diffs = exp( -|x-z|^exponent / bandwidth^exponent )
+        sum  = (1-const_mix) * mean_d(diffs) + const_mix
+        out  = sum^power
+
+    Note: this class only implements the kernel matrix (no grad implementation yet).
+    """
+    def __init__(
+        self,
+        bandwidth: float,
+        exponent: float,
+        eps: float = 1e-10,
+        const_mix: float = 0.0,
+        power: int = 2,
+        bandwidth_mode: str = "constant",
+    ):
+        super().__init__()
+        assert bandwidth > 0
+        assert exponent > 0
+        assert eps > 0
+        assert 0 <= const_mix < 1
+        assert bandwidth_mode == "constant", "Adaptive bandwidth currently not supported"
+
+        self.bandwidth = bandwidth
+        self.base_bandwidth = bandwidth
+        self.exponent = exponent
+        self.const_mix = const_mix
+        self.power = power
+        self.eps = eps
+        self.bandwidth_mode = bandwidth_mode
+
+        if kermac is None:
+            raise ImportError("kermac is required for KermacSumPowerLaplaceKernel.")
+        if not hasattr(kermac, "cdist_expadd"):
+            raise ImportError("kermac.cdist_expadd is required for KermacSumPowerLaplaceKernel.")
+
+    def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        x = self._transform_m(x, mat)
+        z = self._transform_m(z, mat)
+
+        # Ensure Kermac layout constraints
+        x = _ensure_last_stride_is_one(x)
+        z = _ensure_last_stride_is_one(z)
+
+        # sum_{d} exp(-|x_d - z_d|^exponent / bandwidth^exponent)
+        scale = -1.0 / (self.bandwidth ** self.exponent)
+        sum_exp = kermac.cdist_expadd(x, z, p=self.exponent, scale=scale).squeeze(0)
+
+        # Normalize so max sum is ~1 (matches SumPowerLaplaceKernel)
+        sum_exp.mul_((1.0 - self.const_mix) / x.shape[1])
+        sum_exp.add_(self.const_mix)
+        sum_exp.pow_(self.power)
+        return sum_exp
+
+    def _get_function_grad_impl(self, x: torch.Tensor, z: torch.Tensor, coefs: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
+        xm = self._transform_m(x, mat)
+        zm = self._transform_m(z, mat)
+
+        # Ensure Kermac layout constraints
+        xm = _ensure_last_stride_is_one(xm)
+        zm = _ensure_last_stride_is_one(zm)
+        coefs = _ensure_last_stride_is_one(coefs)
+
+        # Kernel:
+        #   exp_term = exp( scale * |x-z|^exponent ), with scale = -1/bandwidth^exponent
+        #   S = sum_d exp_term
+        #   base = const_mix + ((1-const_mix)/d) * S
+        #   k = base^power
+        #
+        # Gradient wrt z uses:
+        #   dk/dz = power * base^(power-1) * d(base)/dz
+        #   d(base)/dz = beta * dS/dz, beta=(1-const_mix)/d
+        #
+        # We use kermac.cdist_grad_expadd with:
+        #   S_km = beta * S_raw_km  (so base = const_mix + S_km)
+        #   a_mat = beta            (to account for dS_km/dz = beta*dS_raw/dz)
+        d_out = xm.shape[1]
+        beta = (1.0 - self.const_mix) / float(d_out)
+        scale = -1.0 / (self.bandwidth ** self.exponent)
+
+        # Precompute S_raw (Mz, Mx), then scale+transpose to (Mx, Mz) to match kermac conventions.
+        S_raw_mk = kermac.cdist_expadd(xm, zm, p=self.exponent, scale=scale).squeeze(0)  # (Mx, Mz)
+        S_km = (S_raw_mk * beta).contiguous()  # (Mx, Mz) == (K,M)
+
+        K = xm.shape[0]  # n_x
+        M = zm.shape[0]  # n_z
+        a_mat = torch.full((K, M), float(beta), device=xm.device, dtype=torch.float32)
+        a_mat = _ensure_last_stride_is_one(a_mat)
+
+        # Transpose to match kermac.cdist_grad_* conventions: b=(N,K)=x^T, d=(N,M)=z^T
+        bT = _ensure_last_stride_is_one(xm.T.contiguous())
+        dT = _ensure_last_stride_is_one(zm.T.contiguous())
+
+        out = kermac.cdist_grad_expadd(
+            a_mat,
+            bT,
+            coefs,
+            dT,
+            s_km=S_km,
+            p=self.exponent,
+            q=float(self.power),
+            c0=float(self.const_mix),
+            scale=scale,
+            eps=self.eps,
+        )
+
+        # kermac returns (L,O,N,M); convert to (L,O,M,N)
+        return out.transpose(-2, -1).float()
 
 class KermacProductLaplaceKernel(Kernel):
     def __init__(self, bandwidth: float, exponent: float, eps: float = 1e-8, bandwidth_mode: str = 'constant'):

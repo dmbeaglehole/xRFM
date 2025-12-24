@@ -144,8 +144,10 @@ dmypy.json
 .pyre/
 
 # External libs
+local_kermac
 kermac
 kaggle
 
 # Plots
+outputs
 examples/plots

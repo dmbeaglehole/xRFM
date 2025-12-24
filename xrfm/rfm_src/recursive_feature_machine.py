@@ -18,6 +18,7 @@ from .kernels import (
     LpqLaplaceKernel,
     KermacProductLaplaceKernel,
     KermacLpqLaplaceKernel,
+    KermacSumPowerLaplaceKernel,
     kermac,
 )
 from .metrics import Metrics, Metric
@@ -142,6 +143,7 @@ class RFM(torch.nn.Module):
         tuning_metric : str, default='mse'
             Metric for model selection and early stopping. Options:
             - 'mse': Mean squared error (for regression)
+            - 'rmse': Root mean squared error (for regression)
             - 'mae': Mean absolute error (for regression)
             - 'accuracy': Classification accuracy
             - 'auc': Area under ROC curve
@@ -312,7 +314,9 @@ class RFM(torch.nn.Module):
             return LaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         elif kernel_str in ['l2_high_dim', 'l2_light']:
             return LightLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
-        elif kernel_str in ['sum_power_laplace', 'l1_power']:
+        elif kernel_str in ['sum_power_laplace', 'kermac_sum_power_laplace']:
+            if use_kermac:
+                return KermacSumPowerLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
             return SumPowerLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         elif kernel_str == 'l1_legacy':
             return ProductLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
@@ -1142,9 +1146,25 @@ class RFM(torch.nn.Module):
 
         return Ms if return_Ms else None
     
-    def _compute_optimal_M_batch(self, n, c, d, scalar_size=4, mem_constant=2., max_batch_size=10_000, max_cheap_batch_size=10_000, 
-                            light_kernels=Union[LaplaceKernel, LightLaplaceKernel, KermacLpqLaplaceKernel, KermacProductLaplaceKernel]):
+    def _compute_optimal_M_batch(
+        self,
+        n,
+        c,
+        d,
+        scalar_size=4,
+        mem_constant=2.0,
+        max_batch_size=10_000,
+        max_cheap_batch_size=10_000,
+        light_kernels=(LaplaceKernel, LightLaplaceKernel, 
+        KermacLpqLaplaceKernel, KermacProductLaplaceKernel, KermacSumPowerLaplaceKernel),
+    ):
         """Computes the optimal batch size for AGOP."""
+        # # SumPowerLaplace gradients can be extremely memory-hungry (large K×M intermediates),
+        # # so be conservative when choosing batch sizes to avoid CUDA OOM.
+        # if isinstance(self.kernel_obj, (SumPowerLaplaceKernel, KermacSumPowerLaplaceKernel)):
+        #     mem_constant = max(float(mem_constant), 10.0)
+        #     max_batch_size = min(int(max_batch_size), 8096)
+
         if self.device in ['cpu', torch.device('cpu')] or isinstance(self.kernel_obj, light_kernels):
             print("Using cheap batch size")
             # cpu and light kernels are less memory intensive, use fewer but larger batches scaled by free GPU memory
@@ -1247,6 +1267,7 @@ class RFM(torch.nn.Module):
             List of metrics to compute. Supported metrics:
             - 'accuracy': Classification accuracy
             - 'mse': Mean squared error
+            - 'rmse': Root mean squared error
             - 'mae': Mean absolute error
             - 'brier': Brier loss (= MSE to one-hot encoded labels for classification)
             - 'logloss': Log loss
