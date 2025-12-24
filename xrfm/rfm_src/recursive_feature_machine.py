@@ -93,9 +93,30 @@ class RFM(torch.nn.Module):
     >>> probabilities = model.predict_proba(X_val)
     """
 
-    def __init__(self, kernel: Union[Kernel, str], iters=5, bandwidth=10., exponent=1., norm_p=None, bandwidth_mode='constant', 
-                 agop_power=0.5, device=None, diag=False, verbose=True, mem_gb=None, tuning_metric='mse', 
-                 categorical_info=None, fast_categorical=False, class_converter=None, time_limit_s=None, solver='solve'):
+    def __init__(
+        self,
+        kernel: Union[Kernel, str],
+        iters=5,
+        bandwidth=10.0,
+        exponent=1.0,
+        norm_p=None,
+        bandwidth_mode="constant",
+        agop_power=0.5,
+        device=None,
+        diag=False,
+        verbose=True,
+        mem_gb=None,
+        tuning_metric="mse",
+        categorical_info=None,
+        fast_categorical=False,
+        class_converter=None,
+        time_limit_s=None,
+        solver="solve",
+        # Kernel-specific kwargs (used by SumPowerLaplace kernels; accepted here for config compatibility)
+        const_mix: float = 0.0,
+        power: int = 2,
+        eps: float | None = None,
+    ):
         """
         Parameters
         ----------
@@ -215,6 +236,9 @@ class RFM(torch.nn.Module):
                 exponent=exponent,
                 norm_p=norm_p,
                 device=device,
+                const_mix=const_mix,
+                power=power,
+                eps=eps,
             )
         self.kernel_obj = kernel
         self.agop_power = agop_power
@@ -266,7 +290,17 @@ class RFM(torch.nn.Module):
         """
         return self.kernel_obj.get_kernel_matrix(x, z, self.sqrtM if self.use_sqrtM else self.M)
 
-    def kernel_from_str(self, kernel_str, bandwidth, exponent, norm_p=2., device=None):
+    def kernel_from_str(
+        self,
+        kernel_str,
+        bandwidth,
+        exponent,
+        norm_p=2.0,
+        device=None,
+        const_mix: float = 0.0,
+        power: int = 2,
+        eps: float | None = None,
+    ):
         """
         Create kernel object from string specification.
         
@@ -314,10 +348,23 @@ class RFM(torch.nn.Module):
             return LaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         elif kernel_str in ['l2_high_dim', 'l2_light']:
             return LightLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
-        elif kernel_str in ['sum_power_laplace', 'kermac_sum_power_laplace']:
+        elif kernel_str in ["sum_power_laplace", "kermac_sum_power_laplace"]:
+            eps_val = 1e-10 if eps is None else eps
             if use_kermac:
-                return KermacSumPowerLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
-            return SumPowerLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
+                return KermacSumPowerLaplaceKernel(
+                    bandwidth=bandwidth,
+                    exponent=exponent,
+                    eps=eps_val,
+                    const_mix=const_mix,
+                    power=power,
+                )
+            return SumPowerLaplaceKernel(
+                bandwidth=bandwidth,
+                exponent=exponent,
+                eps=eps_val,
+                const_mix=const_mix,
+                power=power,
+            )
         elif kernel_str == 'l1_legacy':
             return ProductLaplaceKernel(bandwidth=bandwidth, exponent=exponent)
         elif kernel_str in ['product_laplace', 'l1', 'kermac_product_laplace', 'l1_kermac']:

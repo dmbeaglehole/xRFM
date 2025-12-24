@@ -573,7 +573,7 @@ class SumPowerLaplaceKernel(Kernel):
     def _get_kernel_matrix_impl(self, x: torch.Tensor, z: torch.Tensor, mat: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self._transform_m(x, mat)
         z = self._transform_m(z, mat)
-        
+
         diffs = x[:, None, :] - z[None, :, :]
         diffs.abs_()
         diffs.pow_(self.exponent)
