@@ -24,12 +24,17 @@ def one_hot_encoding(y, device='cuda'):
     return torch.zeros(len(y), 7).scatter_(1, y.unsqueeze(1), 1).to(device)
 
 X, y = fetch_covtype(data_home='./', return_X_y=True, shuffle=True)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=0)
-X_val, X_test, y_val, y_test = train_test_split(X_test, y_test, test_size=0.2, random_state=0)
+# Train/val/test with fixed sizes
+X_trainval, X_test, y_trainval, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=0, stratify=y
+)
+X_train, X_val, y_train, y_val = train_test_split(
+    X_trainval, y_trainval, test_size=0.2, random_state=0, stratify=y_trainval
+)
 
 
-max_n_train = 20_000
-max_n_val = 50_000
+max_n_train = 7500
+max_n_val = 10000
 
 X_train = torch.from_numpy(X_train[:max_n_train]).float().cuda()
 # y_train = one_hot_encoding(y_train[:max_n_train])

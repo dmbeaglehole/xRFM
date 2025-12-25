@@ -151,3 +151,6 @@ kaggle
 # Plots
 outputs
 examples/plots
+
+# Data
+covertype
