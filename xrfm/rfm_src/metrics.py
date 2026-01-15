@@ -29,7 +29,7 @@ class Metric:
 
     @staticmethod
     def from_name(name: str) -> 'Metric':
-        all_metrics = [MSE, MAE, Accuracy, Brier, AUC, Logloss, F1, TopAGOPVectorAUC, TopAGOPVectorPearsonR,
+        all_metrics = [MSE, RMSE, MAE, Accuracy, Brier, AUC, Logloss, F1, TopAGOPVectorAUC, TopAGOPVectorPearsonR,
                        TopAGOPVectorsOLSAUC]
         all_metrics_dict = {m.name: m for m in all_metrics}
         return all_metrics_dict[name]()
@@ -44,7 +44,7 @@ class Metrics:
     def compute(self, **kwargs):
         for q in self.required_quantities:
             if q not in kwargs:
-                raise ValueError(f'Need to pass parameter {q} for metric {self.name}')
+                raise ValueError(f'Need to pass parameter {q} for metrics {self.names}')
 
         return {m.name: m.compute(**kwargs) for m in self.metrics}
 
@@ -61,6 +61,17 @@ class MSE(Metric):
 
     def _compute(self, **kwargs) -> float:
         return (kwargs['y_true_reg'] - kwargs['y_pred']).square().mean().item()
+
+
+class RMSE(Metric):
+    name = 'rmse'
+    display_name = 'RMSE'
+    should_maximize = False
+    task_types = ['reg']
+    required_quantities = ['y_true_reg', 'y_pred']
+
+    def _compute(self, **kwargs) -> float:
+        return (kwargs['y_true_reg'] - kwargs['y_pred']).square().mean().sqrt().item()
 
 
 class MAE(Metric):
