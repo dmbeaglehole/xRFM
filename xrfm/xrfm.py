@@ -138,11 +138,12 @@ class xRFM:
                  number_of_splits=None, device=None, n_trees=1, n_tree_iters=0,
                  split_method='top_vector_agop_on_subset', tuning_metric=None,
                  categorical_info=None, default_rfm_params=None,
-                 fixed_vector=None, callback=None, classification_mode='zero_one', 
+                 fixed_vector=None, callback=None, classification_mode='zero_one',
                  time_limit_s=None, n_threads=None, refill_size=1500, random_state=None,
                  split_temperature=None, overlap_fraction=0.0, use_temperature_tuning=True,
-                 keep_weight_frac_in_predict=0.99, max_leaf_count_in_ensemble=12, 
+                 keep_weight_frac_in_predict=0.99, max_leaf_count_in_ensemble=12,
                  temp_tuning_space: Optional[List[float]]= None,
+                 verbose: bool = True,
                  **kwargs):
         deprecated_min_subset_size = kwargs.pop('min_subset_size', None)
         if deprecated_min_subset_size is not None:
@@ -200,12 +201,13 @@ class xRFM:
             temp_tuning_space = DEFAULT_TEMP_TUNING_SPACE
         self.temp_tuning_space = temp_tuning_space
 
+        self.verbose = verbose
+
         # parameters for refilling the validation set at leaves
         self.min_val_size = refill_size
         self.val_size_frac = 0.2
 
         # default parameters for the split direction model
-        print(default_rfm_params)
         if default_rfm_params is None:
             self.default_rfm_params = {
                 'model': {
@@ -296,7 +298,8 @@ class xRFM:
                 # Transform z to get vector with covariance M
                 projection = sqrtM @ z
             except:
-                print(f"Matrix power failed, defaulting to random projection")
+                if self.verbose:
+                    print(f"Matrix power failed, defaulting to random projection")
 
                 # Fallback to random projection if matrix power fails
                 projection = torch.randn(dim, device=self.device)
@@ -590,7 +593,8 @@ class xRFM:
 
         if should_create_leaf:
             if not is_root:  # refill the validation set if you've split the data before
-                print("Refilling validation set, because at least one split has been made.")
+                if self.verbose:
+                    print("Refilling validation set, because at least one split has been made.")
                 X, y, X_val, y_val, train_indices = self._refill_val_set(X, y, X_val, y_val, train_indices)
 
             # Create and fit a xRFM model on this subset
@@ -642,7 +646,8 @@ class xRFM:
             beta = beta.mean(dim=1)  # probably not the best way to do this
             projection = beta / torch.norm(beta)
         elif 'agop_on_subset' in self.split_method:
-            print(f"Using {self.split_method} split method")
+            if self.verbose:
+                print(f"Using {self.split_method} split method")
             sub_time_limit_s = None
             if time_limit_s is not None:
                 # spend ~half of the time for fitting agop_on_subset and the other half for fitting the leaves
@@ -832,10 +837,11 @@ class xRFM:
                 best_val_score = val_score
                 best_tree = self.tree_copy(tree)
 
-        print("==========================Tree iteration results==========================")
-        print("Validation scores over tree iterations:", val_scores)
-        print("Best validation score:", best_val_score)
-        print("==========================================================================")
+        if self.verbose:
+            print("==========================Tree iteration results==========================")
+            print("Validation scores over tree iterations:", val_scores)
+            print("Best validation score:", best_val_score)
+            print("==========================================================================")
         return best_tree
 
     def fit(self, X, y, X_val, y_val, **kwargs):
@@ -858,7 +864,8 @@ class xRFM:
         self : object
             Returns self.
         """
-        print(f"Fitting xRFM with {self.n_trees} trees and {self.n_tree_iters} iterations per tree")
+        if self.verbose:
+            print(f"Fitting xRFM with {self.n_trees} trees and {self.n_tree_iters} iterations per tree")
 
         if self.n_threads is not None:
             old_n_threads = torch.get_num_threads()
@@ -927,7 +934,7 @@ class xRFM:
         self.trees = []
         start_time = time.time()
         has_split = False
-        for iter in tqdm(range(self.n_trees), desc="Building trees"):
+        for iter in tqdm(range(self.n_trees), desc="Building trees", disable=not self.verbose):
             if iter > 0 and self.time_limit_s is not None and (iter + 1) / iter * (
                     time.time() - start_time) > self.time_limit_s:
                 break
@@ -943,7 +950,8 @@ class xRFM:
             self._ensure_tree_cache(tree)
 
             if tree['type'] == 'leaf':
-                print("Tree has no split, stopping training")
+                if self.verbose:
+                    print("Tree has no split, stopping training")
                 break
             has_split = True
 
@@ -1042,10 +1050,11 @@ class xRFM:
         self.best_split_temperature_score_ = best_score
         self.temperature_tuning_results_ = tuning_results
 
-        print(
-            f"Selected split_temperature={self.split_temperature if self.split_temperature is not None else 0.0} "
-            f"based on validation {self.tuning_metric}={best_score:.6f}"
-        )
+        if self.verbose:
+            print(
+                f"Selected split_temperature={self.split_temperature if self.split_temperature is not None else 0.0} "
+                f"based on validation {self.tuning_metric}={best_score:.6f}"
+            )
 
         return self.split_temperature
 
@@ -1533,8 +1542,9 @@ class xRFM:
         X_val = X[subset_val_indices]
         y_val = y[subset_val_indices]
 
-        print("Getting AGOP on subset")
-        print("X_train", X_train.shape, "y_train", y_train.shape, "X_val", X_val.shape, "y_val", y_val.shape)
+        if self.verbose:
+            print("Getting AGOP on subset")
+            print("X_train", X_train.shape, "y_train", y_train.shape, "X_val", X_val.shape, "y_val", y_val.shape)
 
         model.fit((X_train, y_train), (X_val, y_val), **self.default_rfm_params['fit'])
         agop = model.agop_best_model
