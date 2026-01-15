@@ -60,14 +60,15 @@ def get_top_eigenvector(M: torch.Tensor, method: str = 'auto', eps: float = 1e-6
     _, _, Vt = torch.linalg.svd(M, full_matrices=False)
     return Vt[0]
 
-def matrix_power(M, power):
+def matrix_power(M, power, verbose=True):
     """
     Compute the power of a matrix.
     :param M: Matrix to power.
     :param power: Power to raise the matrix to.
+    :param verbose: Whether to print progress information.
     :return: Matrix raised to the power - M^{power}.
     """
-    return stable_matrix_power(M, power)
+    return stable_matrix_power(M, power, verbose=verbose)
     # if len(M.shape) == 2:
     #     assert M.shape[0] == M.shape[1], "Matrix must be square"
 
@@ -82,11 +83,13 @@ def matrix_power(M, power):
     # else:
     #     raise ValueError(f"Invalid matrix shape for square root: {M.shape}")
     
-def stable_matrix_power(M, power, MAX_DIMENSIONS_FOR_SVD=5000):
+def stable_matrix_power(M, power, MAX_DIMENSIONS_FOR_SVD=5000, verbose=True):
     """
     Compute the power of a matrix.
     :param M: Matrix to power.
     :param power: Power to raise the matrix to.
+    :param MAX_DIMENSIONS_FOR_SVD: Threshold for using full vs lowrank SVD.
+    :param verbose: Whether to print progress information.
     :return: Matrix raised to the power - M^{power}.
     """
     if len(M.shape) == 2:
@@ -94,11 +97,13 @@ def stable_matrix_power(M, power, MAX_DIMENSIONS_FOR_SVD=5000):
 
         # Handle NaNs
         if torch.isnan(M).all():
-            print("All NaNs in matrix, returning identity")
+            if verbose:
+                print("All NaNs in matrix, returning identity")
             return torch.eye(M.shape[0], device=M.device, dtype=M.dtype)
 
         if torch.isnan(M).any():
-            print("Some NaNs in matrix, replacing with 0")
+            if verbose:
+                print("Some NaNs in matrix, replacing with 0")
             M = torch.nan_to_num(M, nan=0.0, posinf=1e12, neginf=-1e12)
             # Optional: scale to a reasonable magnitude
             scale = M.abs().max()
@@ -107,15 +112,18 @@ def stable_matrix_power(M, power, MAX_DIMENSIONS_FOR_SVD=5000):
 
         M.diagonal().add_(1e-8)
         if M.shape[0] < MAX_DIMENSIONS_FOR_SVD:
-            print("Using SVD")
+            if verbose:
+                print("Using SVD")
             U, S, _ = torch.linalg.svd(M)
         else:
-            print("Using SVD lowrank with q=", MAX_DIMENSIONS_FOR_SVD)
-            print("M.shape", M.shape)
+            if verbose:
+                print("Using SVD lowrank with q=", MAX_DIMENSIONS_FOR_SVD)
+                print("M.shape", M.shape)
             start_time = time.time()
             U, S, _ = torch.svd_lowrank(M, q=MAX_DIMENSIONS_FOR_SVD)
             end_time = time.time()
-            print(f"Time taken for SVD lowrank: {end_time - start_time} seconds")
+            if verbose:
+                print(f"Time taken for SVD lowrank: {end_time - start_time} seconds")
 
         S[S<0] = 0.
         return (U @ torch.diag(S**power) @ U.T).to(device=M.device, dtype=M.dtype)
@@ -123,11 +131,13 @@ def stable_matrix_power(M, power, MAX_DIMENSIONS_FOR_SVD=5000):
     elif len(M.shape) == 1:
         # Handle NaNs
         if torch.isnan(M).all():
-            print("All NaNs in vector, returning all ones")
+            if verbose:
+                print("All NaNs in vector, returning all ones")
             return torch.ones(M.shape[0], device=M.device, dtype=M.dtype)
 
         if torch.isnan(M).any():
-            print("Some NaNs in vector, replacing with 0")
+            if verbose:
+                print("Some NaNs in vector, replacing with 0")
             M = torch.nan_to_num(M, nan=0.0, posinf=1e12, neginf=-1e12)
             # Optional: scale to a reasonable magnitude
             scale = M.abs().max()

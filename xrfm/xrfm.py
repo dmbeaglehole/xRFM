@@ -601,7 +601,7 @@ class xRFM:
             # Create and fit a xRFM model on this subset
             model = RFM(**self.rfm_params['model'], tuning_metric=self.tuning_metric,
                         categorical_info=self.categorical_info, device=self.device, time_limit_s=time_limit_s,
-                        **self.extra_rfm_params_)
+                        verbose=self.verbose, **self.extra_rfm_params_)
 
             model.fit((X, y), (X_val, y_val), **self.rfm_params['fit'], callback=self.callback, **kwargs)
             return {'type': 'leaf', 'model': model, 'train_indices': train_indices, 'is_root': is_root}
@@ -811,7 +811,7 @@ class xRFM:
 
         val_scores = [best_val_score + 0]
 
-        for iter in tqdm(range(self.n_tree_iters), desc="Iterating tree"):
+        for iter in tqdm(range(self.n_tree_iters), desc="Iterating tree", disable=not self.verbose):
             if time_limit_s is not None and (iter + 2) / (iter + 1) * (time.time() - start_time) > time_limit_s:
                 break  # stop early because we expect to exceed the time limit
 
@@ -1025,7 +1025,7 @@ class xRFM:
                 return preds[0]
             return torch.mean(torch.stack(preds, dim=0), dim=0)
 
-        for temp_candidate in tqdm(temp_tuning_space, desc="Tuning split temperature"):
+        for temp_candidate in tqdm(temp_tuning_space, desc="Tuning split temperature", disable=not self.verbose):
             temp_candidate = float(temp_candidate)
             if temp_candidate <= 0.0:
                 self.split_temperature = None
@@ -1438,7 +1438,7 @@ class xRFM:
             if tree['type'] == 'leaf':
                 leaf_model = RFM(**self.rfm_params['model'],
                                  categorical_info=self.categorical_info,
-                                 device=self.device, **self.extra_rfm_params_)
+                                 device=self.device, verbose=self.verbose, **self.extra_rfm_params_)
                 leaf_model.kernel_obj.bandwidth = tree['bandwidth']
                 leaf_model.weights = tree['weights']
                 leaf_model.M = tree['M']
@@ -1527,7 +1527,7 @@ class xRFM:
             AGOP matrix of shape (n_features, n_features)
         """
         model = RFM(**self.default_rfm_params['model'], device=self.device, time_limit_s=time_limit_s,
-                    **self.extra_rfm_params_)
+                    verbose=self.verbose, **self.extra_rfm_params_)
 
         base_subset_size = int(subset_size)
         scaled_subset_size = max(int(base_subset_size * memory_scaling_factor(self.device, quadratic=True)), 1)

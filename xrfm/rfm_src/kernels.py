@@ -94,7 +94,6 @@ class Kernel:
 
     
     def set_categorical_indices(self, numerical_indices, categorical_indices, categorical_vectors, device='cuda'):
-        print("Setting categorical indices")
         self.numerical_indices = numerical_indices.to(device)
         self.categorical_indices = [categorical_indices[i].to(device) for i in range(len(categorical_indices))]
         self.categorical_vectors = [categorical_vectors[i].to(device) for i in range(len(categorical_vectors))]

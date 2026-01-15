@@ -567,7 +567,8 @@ class RFM(torch.nn.Module):
                 raise ValueError("Adaptive bandwidth is not yet supported for SumPowerLaplaceKernel.")
 
             # adaptive bandwidth will be reset on next kernel computation
-            print("Resetting adaptive bandwidth")
+            if self.verbose:
+                print("Resetting adaptive bandwidth")
             self.reset_adaptive_bandwidth()
 
         self.centers = centers
@@ -669,8 +670,9 @@ class RFM(torch.nn.Module):
 
 
         from .kernel_log_reg import kernel_log_solve
-        print('-'*100)
-        print("Starting kernel log solve")
+        if self.verbose:
+            print('-'*100)
+            print("Starting kernel log solve")
         alpha = kernel_log_solve(
             K, targets,
             reg=float(self.reg) if self.reg is not None else 0.0,
@@ -680,7 +682,8 @@ class RFM(torch.nn.Module):
             initial_alpha=None,
             callback=_early_stop_cb,
         )
-        print('-'*100)
+        if self.verbose:
+            print('-'*100)
 
         # Choose best seen alpha if recorded; otherwise use final alpha
         self.weights = (best_alphas.to(self.device) if best_alphas is not None else alpha)
@@ -731,7 +734,8 @@ class RFM(torch.nn.Module):
                 P, L, U = torch.linalg.lu(kernel_matrix)
                 out = torch.linalg.lu_solve(P, L, U, targets)
         except Exception as e:
-            print(f"Error in previous solver: {e}, re-trying with large regularization")
+            if self.verbose:
+                print(f"Error in previous solver: {e}, re-trying with large regularization")
             
             # Gershgorin circle theorem to upper bound maximum eigenvalue
             row_sums = kernel_matrix.abs().sum(dim=1)
@@ -1098,9 +1102,10 @@ class RFM(torch.nn.Module):
         n, d = X_train.shape
         assert len(y_train.shape) == 2, "y_train must be a 2D tensor"
 
-        print("="*70)
-        print(f"Fitting RFM with ntrain: {n}, d: {d}, and nval: {X_val.shape[0]}")
-        print("="*70)
+        if self.verbose:
+            print("="*70)
+            print(f"Fitting RFM with ntrain: {n}, d: {d}, and nval: {X_val.shape[0]}")
+            print("="*70)
 
         self.n_classes = y_train.shape[1]
         if self.class_converter is None and self.n_classes > 1:
@@ -1146,7 +1151,8 @@ class RFM(torch.nn.Module):
             if self.early_stop_rfm:
                 val_metric = val_metrics[self.tuning_metric]
                 if self._should_early_stop(val_metric, best_metric):
-                    print(f"Early stopping at iteration {i}")
+                    if self.verbose:
+                        print(f"Early stopping at iteration {i}")
                     if not return_best_params:
                         self.fit_M(X_train, self.n_classes, M_batch_size=M_batch_size, **kwargs)
                     early_stopped = True
@@ -1160,7 +1166,8 @@ class RFM(torch.nn.Module):
                 Ms.append(self.tensor_copy(self.M))
                 metrics.append(val_metrics[self.tuning_metric])
 
-            print(f"Time taken for round {i}: {time.time() - start} seconds")
+            if self.verbose:
+                print(f"Time taken for round {i}: {time.time() - start} seconds")
 
         if callback is not None:
             callback(iteration=self.iters)
@@ -1213,13 +1220,15 @@ class RFM(torch.nn.Module):
         #     max_batch_size = min(int(max_batch_size), 8096)
 
         if self.device in ['cpu', torch.device('cpu')] or isinstance(self.kernel_obj, light_kernels):
-            print("Using cheap batch size")
+            if self.verbose:
+                print("Using cheap batch size")
             # cpu and light kernels are less memory intensive, use fewer but larger batches scaled by free GPU memory
             cheap_batch_cap = int(max_cheap_batch_size * memory_scaling_factor(self.device))
             cheap_batch_cap = max(cheap_batch_cap, 1)
             M_batch_size = max(min(n, cheap_batch_cap), 1)
         else:
-            print("Using expensive batch size")
+            if self.verbose:
+                print("Using expensive batch size")
             available_memory, _ = get_gpu_memory_bytes(self.device)
             if not available_memory:
                 M_batch_size = max(min(n, max_batch_size), 1)
@@ -1228,7 +1237,8 @@ class RFM(torch.nn.Module):
                 M_batch_size = int(available_memory / denom) if denom else max_batch_size
                 M_batch_size = max(M_batch_size, 1)
                 M_batch_size = min(M_batch_size, max_batch_size, n)
-        print(f"Optimal M batch size: {M_batch_size}")
+        if self.verbose:
+            print(f"Optimal M batch size: {M_batch_size}")
         return M_batch_size
     
     def fit_M(self, samples, num_classes, M_batch_size=None, inplace=True, **kwargs):
@@ -1290,7 +1300,7 @@ class RFM(torch.nn.Module):
         
         scaled_M = M / (M.max() + 1e-30)
         if self.use_sqrtM:
-            sqrtM = matrix_power(scaled_M, self.agop_power)
+            sqrtM = matrix_power(scaled_M, self.agop_power, verbose=self.verbose)
         else:
             sqrtM = None
         
