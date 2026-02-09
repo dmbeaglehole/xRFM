@@ -252,22 +252,39 @@ class xRFM:
         if self.trees is not None:
             for tree in self.trees:
                 self._move_tree_to_device(tree, device)
+
+        # Move categorical_info tensors
+        cat_info = getattr(self, 'categorical_info', None)
+        if isinstance(cat_info, dict):
+            for key in list(cat_info.keys()):
+                val = cat_info[key]
+                if torch.is_tensor(val):
+                    cat_info[key] = val.to(device)
+                elif isinstance(val, list):
+                    cat_info[key] = [
+                        v.to(device) if torch.is_tensor(v) else v
+                        for v in val
+                    ]
+
         return self
 
     def _move_tree_to_device(self, node, device):
         """Recursively move all tensors in a tree node to *device*."""
         if node is None:
             return
+
+        # Move every tensor value in this node dict
+        for key in list(node.keys()):
+            val = node[key]
+            if torch.is_tensor(val):
+                node[key] = val.to(device)
+
+        # Recurse into the leaf model and child nodes
         if node.get('type') == 'leaf':
             model = node.get('model')
             if model is not None and hasattr(model, 'to'):
                 model.to(device)
         else:
-            # Internal node — move split direction and split point tensors
-            for key in ('split_direction', 'split_point'):
-                val = node.get(key)
-                if val is not None and torch.is_tensor(val):
-                    node[key] = val.to(device)
             self._move_tree_to_device(node.get('left'), device)
             self._move_tree_to_device(node.get('right'), device)
 
