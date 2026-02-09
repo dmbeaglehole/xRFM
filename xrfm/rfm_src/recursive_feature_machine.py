@@ -269,20 +269,58 @@ class RFM(torch.nn.Module):
         else:
             self.mem_gb = 8
         
+    def to(self, device, **kwargs):
+        """Move all internal tensors and state to *device*.
+
+        Parameters
+        ----------
+        device : str or torch.device
+            Target device ('cpu', 'cuda', etc.)
+
+        Returns
+        -------
+        self
+        """
+        device = device_from_str(device)
+        self.device = device
+
+        # Core model tensors
+        for attr in ("centers", "weights", "M", "sqrtM"):
+            val = getattr(self, attr, None)
+            if val is not None and torch.is_tensor(val):
+                setattr(self, attr, val.to(device))
+
+        # Kernel object categorical tensors
+        kernel = getattr(self, "kernel_obj", None)
+        if kernel is not None:
+            for attr in ("numerical_indices",):
+                val = getattr(kernel, attr, None)
+                if val is not None and torch.is_tensor(val):
+                    setattr(kernel, attr, val.to(device))
+            for list_attr in ("categorical_indices", "categorical_vectors"):
+                lst = getattr(kernel, list_attr, None)
+                if lst is not None:
+                    for i, val in enumerate(lst):
+                        if torch.is_tensor(val):
+                            lst[i] = val.to(device)
+
+        # Let nn.Module.to() handle any registered parameters/buffers
+        return super().to(device, **kwargs)
+
     def kernel(self, x, z):
         """
         Compute kernel matrix between two sets of points.
-        
+
         This method delegates to the kernel object's get_kernel_matrix method,
         applying the learned Mahalanobis matrix transformation.
-        
+
         Parameters
         ----------
         x : torch.Tensor
             First set of points of shape (n_x, d)
         z : torch.Tensor
             Second set of points of shape (n_z, d)
-            
+
         Returns
         -------
         torch.Tensor

@@ -234,6 +234,42 @@ class xRFM:
             self.rfm_params['fit']['return_best_params'] = True
             self.rfm_params['fit']['iters'] = 5
 
+    def to(self, device):
+        """Move all internal tensors and leaf RFM models to *device*.
+
+        Parameters
+        ----------
+        device : str or torch.device
+            Target device ('cpu', 'cuda', etc.)
+
+        Returns
+        -------
+        self
+        """
+        device = torch.device(device) if isinstance(device, str) else device
+        self.device = device
+
+        if self.trees is not None:
+            for tree in self.trees:
+                self._move_tree_to_device(tree, device)
+        return self
+
+    def _move_tree_to_device(self, node, device):
+        """Recursively move all tensors in a tree node to *device*."""
+        if node is None:
+            return
+        if node.get('type') == 'leaf':
+            model = node.get('model')
+            if model is not None and hasattr(model, 'to'):
+                model.to(device)
+        else:
+            # Internal node — move projection vector if present
+            proj = node.get('projection')
+            if proj is not None and torch.is_tensor(proj):
+                node['projection'] = proj.to(device)
+            self._move_tree_to_device(node.get('left'), device)
+            self._move_tree_to_device(node.get('right'), device)
+
     def tree_copy(self, tree):
         """
         Deep copy a tree structure.
