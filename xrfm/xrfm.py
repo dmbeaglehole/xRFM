@@ -263,10 +263,11 @@ class xRFM:
             if model is not None and hasattr(model, 'to'):
                 model.to(device)
         else:
-            # Internal node — move projection vector if present
-            proj = node.get('projection')
-            if proj is not None and torch.is_tensor(proj):
-                node['projection'] = proj.to(device)
+            # Internal node — move split direction and split point tensors
+            for key in ('split_direction', 'split_point'):
+                val = node.get(key)
+                if val is not None and torch.is_tensor(val):
+                    node[key] = val.to(device)
             self._move_tree_to_device(node.get('left'), device)
             self._move_tree_to_device(node.get('right'), device)
 
