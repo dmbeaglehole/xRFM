@@ -7,7 +7,7 @@ name = "xrfm"
 dynamic = ["version"]
 description = 'xRFM: Scalable and interpretable kernel methods for tabular data'
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = "MIT"
 keywords = ["tabular data", "scikit-learn", "machine learning", "feature machine", "recursive", "tree-based"]
 authors = [
@@ -17,8 +17,6 @@ authors = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
