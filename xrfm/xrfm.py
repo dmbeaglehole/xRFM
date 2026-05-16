@@ -251,6 +251,12 @@ class xRFM:
 
         if self.trees is not None:
             for tree in self.trees:
+                # Drop the routing cache before moving: it stores tensor
+                # references captured in _build_tree_cache, which a node-dict
+                # reassignment in _move_tree_to_device cannot reach. Leaving it
+                # in place would keep source-device tensors live and break
+                # pickling onto another device.
+                tree.pop('_cache', None)
                 self._move_tree_to_device(tree, device)
 
         # Move categorical_info tensors

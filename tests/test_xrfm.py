@@ -352,3 +352,32 @@ def test_cpu_gpu_l1_lpq_routing(kernel, norm_p, exponent, bandwidth_mode):
     assert gpu_kernel_types == {expected_gpu_cls}
 
     np.testing.assert_allclose(cpu_preds, gpu_preds, atol=1e-2, rtol=1e-3)
+
+
+def test_to_does_not_leave_stale_device_tensors_in_tree_cache():
+    """`xRFM.to()` must not leave stale-device tensors live inside `tree['_cache']`.
+
+    `_ensure_tree_cache` captures `node['split_direction']` and `node['split_point']`
+    by reference. `_move_tree_to_device` then reassigns those slots on the node
+    dicts via `node[key] = val.to(device)` — but the cache still holds the
+    original references, so a subsequent pickle bakes the source-device storage
+    tag in and breaks unpickling on a CPU-only worker.
+    """
+    model, tree = _make_manual_model(split_temperature=None)
+    assert '_cache' in tree, "precondition: cache populated by _make_manual_model"
+
+    target = torch.device('meta')
+    model.to(target)
+
+    cache = tree.get('_cache')
+    if cache is None:
+        return  # invalidated — cache will be rebuilt lazily on next predict
+
+    for node_id, direction in cache['split_directions'].items():
+        assert direction.device == target, (
+            f"cached split_direction[{node_id}] on {direction.device}, expected {target}"
+        )
+    for node_id, threshold in cache['split_thresholds'].items():
+        assert threshold.device == target, (
+            f"cached split_threshold[{node_id}] on {threshold.device}, expected {target}"
+        )
