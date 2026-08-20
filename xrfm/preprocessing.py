@@ -22,7 +22,9 @@ statistically correct and the provably invariant choice.
 Evidence (xRFM 0.4.5, 256-row supports, 189 OpenML datasets from CC18/CTR23/Grinsztajn/
 TabZilla/AMLB, tuned via the package's own random search): replacing standardization-only
 inputs with rank+z+frequency channels improves mean skill by +0.007 (104/83 wins, Wilcoxon
-p = 0.018). Under adversarial strictly-increasing marginal warps the gap is far larger: the
+p = 0.018). Caveats: that baseline omits one-hot expansion (so it understates the native
+pipeline on categorical-heavy data), and at 256 rows the xRFM tree does not split, so the
+comparison exercises the leaf RFM rather than the tree-partitioned method. Under adversarial strictly-increasing marginal warps the gap is far larger: the
 rank channel is exactly invariant (99% of tasks move < 1e-3 in skill, worst case 2e-3) while
 standardized inputs lose 0.038 mean and up to 0.39 worst-case skill.
 
